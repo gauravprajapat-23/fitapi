@@ -1,0 +1,1159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ──────────────────────────────────────────────
+// ENUMS
+// ──────────────────────────────────────────────
+
+enum AuthProvider {
+  email
+  google
+  apple
+  phone
+}
+
+enum Gender {
+  male
+  female
+  non_binary
+  prefer_not_to_say
+}
+
+enum FitnessLevel {
+  beginner
+  intermediate
+  active
+  athlete
+}
+
+enum ProfileVisibility {
+  public
+  friends
+  private
+}
+
+enum Theme {
+  dark
+  light
+  system
+}
+
+enum DistanceUnit {
+  km
+  miles
+}
+
+enum ActivityType {
+  running
+  walking
+  cycling
+  yoga
+  strength
+  swimming
+  meditation
+  custom
+}
+
+enum TargetUnit {
+  km
+  miles
+  steps
+  minutes
+  sessions
+}
+
+enum VerificationMethod {
+  gps
+  wearable
+  photo
+  manual
+}
+
+enum GoalStatus {
+  scheduled
+  active
+  completed
+  abandoned
+  expired
+}
+
+enum TaskStatus {
+  pending
+  completed
+  missed
+  shielded
+  rest_day
+  grace_window
+}
+
+enum ActivitySource {
+  gps_app
+  healthkit
+  google_fit
+  garmin
+  fitbit
+  samsung_health
+  manual
+  photo
+}
+
+enum VerificationStatus {
+  pending
+  passed
+  failed
+  disputed
+}
+
+enum ChallengeType {
+  public
+  private
+  corporate
+  charity
+  coach_led
+}
+
+enum PrizeModel {
+  proportional
+  winner_takes_most
+  all_or_nothing
+}
+
+enum ChallengeStatus {
+  draft
+  open
+  full
+  active
+  completed
+  cancelled
+}
+
+enum ParticipantStatus {
+  active
+  completed
+  abandoned
+  disqualified
+}
+
+enum TransactionType {
+  deposit
+  withdrawal
+  stake
+  unstake
+  earnback
+  forfeit
+  challenge_prize
+  streak_bonus
+  referral_bonus
+  admin_adjustment
+  shield_purchase
+}
+
+enum TransactionDirection {
+  credit
+  debit
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  reversed
+}
+
+enum PaymentGateway {
+  razorpay
+  stripe
+  upi_direct
+}
+
+enum PaymentOrderStatus {
+  created
+  attempted
+  paid
+  failed
+  refunded
+}
+
+enum WithdrawalStatus {
+  pending
+  processing
+  completed
+  failed
+  cancelled
+}
+
+enum BankAccountType {
+  savings
+  current
+}
+
+enum ShieldPlan {
+  basic
+  pro
+  elite
+}
+
+enum BillingCycle {
+  monthly
+  annual
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  cancelled
+  expired
+}
+
+enum FitCoinTxType {
+  earned_streak
+  earned_challenge
+  earned_referral
+  spent_shield_restore
+  spent_challenge_entry
+  admin_grant
+}
+
+enum FriendshipStatus {
+  pending
+  accepted
+  blocked
+}
+
+enum ReferralStatus {
+  pending
+  signed_up
+  goal_created
+  bonus_paid
+}
+
+enum MessageType {
+  text
+  sticker
+  route_share
+  system
+}
+
+enum NotificationType {
+  task_reminder
+  task_completed
+  task_missed
+  streak_at_risk
+  streak_broken
+  streak_milestone
+  challenge_update
+  challenge_results
+  wallet_credited
+  withdrawal_processed
+  shield_restore_used
+  friend_request
+  referral_bonus
+}
+
+enum BadgeCategory {
+  streak
+  challenge
+  goal
+  financial
+  special
+}
+
+enum BadgeRarity {
+  common
+  rare
+  epic
+  legendary
+}
+
+enum RequirementType {
+  streak_days
+  challenges_won
+  goals_completed
+  amount_earned
+  referrals
+}
+
+enum KYCStatus {
+  not_started
+  pending
+  approved
+  rejected
+  re_submit
+}
+
+enum WearablePlatform {
+  healthkit
+  google_fit
+  garmin
+  fitbit
+  samsung_health
+  whoop
+  polar
+  oura
+}
+
+enum LeaderboardScope {
+  global
+  friends
+  city
+  challenge
+}
+
+enum LeaderboardMetric {
+  streak
+  earned
+  completion_rate
+  challenges_won
+}
+
+enum LeaderboardPeriod {
+  this_week
+  this_month
+  all_time
+}
+
+enum AuditActorType {
+  user
+  admin
+  system
+  cron
+}
+
+enum DisputeStatus {
+  open
+  under_review
+  resolved_user
+  resolved_system
+  rejected
+}
+
+enum WorkoutTime {
+  morning
+  evening
+  flexible
+}
+
+enum StorePlatform {
+  app_store
+  play_store
+  web
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 1: IDENTITY & AUTH
+// ──────────────────────────────────────────────
+
+model User {
+  id            String        @id @default(uuid()) @db.Uuid
+  email         String        @unique @db.VarChar(320)
+  phone         String?       @unique @db.VarChar(20)
+  phoneVerified Boolean       @default(false)
+  emailVerified Boolean       @default(false)
+  passwordHash  String?       @db.VarChar(255)
+  authProvider  AuthProvider  @default(email)
+  googleId      String?       @unique @db.VarChar(128)
+  appleId       String?       @unique @db.VarChar(128)
+  isActive      Boolean       @default(true)
+  isBanned      Boolean       @default(false)
+  banReason     String?       @db.Text
+  lastLoginAt   DateTime?     @db.Timestamptz
+  lastLoginIp   String?       @db.Inet
+  createdAt     DateTime      @default(now()) @db.Timestamptz
+  updatedAt     DateTime      @updatedAt @db.Timestamptz
+  deletedAt     DateTime?     @db.Timestamptz
+
+  profile           UserProfile?
+  settings          UserSetting?
+  devices           UserDevice[]
+  wallet            Wallet?
+  streaks           Streak[]
+  goals             Goal[]
+  dailyTaskLogs     DailyTaskLog[]
+  activitySessions  ActivitySession[]
+  challengeEntries  ChallengeParticipant[]
+  transactions      Transaction[]
+  paymentOrders     PaymentOrder[]
+  withdrawalReqs    WithdrawalRequest[]
+  bankAccounts      UserBankAccount[]
+  subscriptions     StreakShieldSubscription[]
+  fitCoinLedger     FitCoinLedger[]
+  notifications     Notification[]
+  achievements      UserAchievement[]
+  kyc               KYCVerification?
+  wearableCons      WearableConnection[]
+  sentRequests      Friendship[]      @relation("FriendshipRequester")
+  receivedRequests  Friendship[]      @relation("FriendshipAddressee")
+  referralsGiven    Referral[]        @relation("ReferralReferrer")
+  referralsReceived Referral[]        @relation("ReferralReferred")
+  chatMessages      GroupChatMessage[]
+  messageReactions  MessageReaction[]
+  disputes          DisputeTicket[]
+  leaderboardEntries LeaderboardCache[]
+  auditLogs         SystemAuditLog[]
+  challengeCreators Challenge[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([deletedAt])
+  @@index([lastLoginAt(sort: Desc)])
+  @@map("users")
+}
+
+model UserProfile {
+  id                    String            @id @default(uuid()) @db.Uuid
+  userId                String            @unique @db.Uuid
+  username              String            @unique @db.VarChar(32)
+  displayName           String            @db.VarChar(80)
+  bio                   String?           @db.VarChar(300)
+  avatarUrl             String?           @db.Text
+  coverUrl              String?           @db.Text
+  city                  String?           @db.VarChar(100)
+  countryCode           String?           @db.Char(2)
+  dateOfBirth           DateTime?         @db.Date
+  gender                Gender?
+  fitnessLevel          FitnessLevel
+  primaryGoal           String?           @db.VarChar(50)
+  preferredActivities   Json?             @db.JsonB
+  dailyAvailableMinutes Int?              @db.SmallInt
+  preferredWorkoutTime  WorkoutTime?
+  totalEarned           Decimal           @default(0) @db.Decimal(12, 2)
+  totalStaked           Decimal           @default(0) @db.Decimal(12, 2)
+  totalChallengesWon    Int               @default(0) @db.SmallInt
+  profileVisibility     ProfileVisibility @default(public)
+  createdAt             DateTime          @default(now()) @db.Timestamptz
+  updatedAt             DateTime          @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([username])
+  @@index([city])
+  @@map("user_profiles")
+}
+
+model UserSetting {
+  id                  String       @id @default(uuid()) @db.Uuid
+  userId              String       @unique @db.Uuid
+  currency            String       @default("INR") @db.Char(3)
+  language            String       @default("en") @db.Char(5)
+  timezone            String       @default("Asia/Kolkata") @db.VarChar(50)
+  theme               Theme        @default(dark)
+  distanceUnit        DistanceUnit @default(km)
+  notifTaskReminder   Boolean      @default(true)
+  notifStreakAlert    Boolean      @default(true)
+  notifChallengeUpdate Boolean    @default(true)
+  notifWallet         Boolean      @default(true)
+  notifMarketing      Boolean      @default(false)
+  reminderTime        DateTime?    @db.Time
+  biometricAuthEnabled Boolean     @default(false)
+  shareActivityPublicly Boolean   @default(true)
+  showGoalsOnProfile  Boolean      @default(true)
+  createdAt           DateTime     @default(now()) @db.Timestamptz
+  updatedAt           DateTime     @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model UserDevice {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  deviceToken String    @unique @db.Text
+  platform    String    @db.VarChar(10) // 'ios' or 'android'
+  deviceModel String?   @db.VarChar(100)
+  osVersion   String?   @db.VarChar(20)
+  appVersion  String?   @db.VarChar(20)
+  isActive    Boolean   @default(true)
+  lastSeenAt  DateTime? @db.Timestamptz
+  createdAt   DateTime  @default(now()) @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([deviceToken])
+  @@map("user_devices")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 2: GOALS & DAILY TASKS
+// ──────────────────────────────────────────────
+
+model Goal {
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @db.Uuid
+  activityType        ActivityType
+  title               String           @db.VarChar(120)
+  taskDescription     String           @db.Text
+  targetValue         Decimal          @db.Decimal(8, 2)
+  targetUnit          TargetUnit
+  verificationMethod  VerificationMethod
+  earnbackRate        Decimal          @default(1.0) @db.Decimal(5, 4)
+  durationDays        Int              @db.SmallInt
+  startDate           DateTime         @db.Date
+  endDate             DateTime         @db.Date
+  stakeAmount         Decimal          @db.Decimal(12, 2)
+  dailyEarnback       Decimal          @db.Decimal(12, 2)
+  status              GoalStatus       @default(scheduled)
+  completionPct       Decimal?         @default(0) @db.Decimal(5, 2)
+  totalEarned         Decimal          @default(0) @db.Decimal(12, 2)
+  totalForfeited      Decimal          @default(0) @db.Decimal(12, 2)
+  restDaysEnabled     Boolean          @default(false)
+  restDayOfWeek       Int[]            @db.SmallInt
+  createdAt           DateTime         @default(now()) @db.Timestamptz
+  updatedAt           DateTime         @updatedAt @db.Timestamptz
+  deletedAt           DateTime?        @db.Timestamptz
+
+  user           User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  dailyLogs      DailyTaskLog[]
+  activitySess   ActivitySession[]
+  streak         Streak?
+
+  @@index([userId, status])
+  @@index([userId, startDate(sort: Desc)])
+  @@index([status, endDate])
+  @@map("goals")
+}
+
+model DailyTaskLog {
+  id                  String         @id @default(uuid()) @db.Uuid
+  goalId              String         @db.Uuid
+  userId              String         @db.Uuid
+  taskDate            DateTime       @db.Date
+  status              TaskStatus
+  activitySessionId   String?        @db.Uuid
+  verificationType    VerificationMethod?
+  verificationScore   Decimal?       @db.Decimal(5, 4)
+  earnedAmount        Decimal?       @db.Decimal(12, 2)
+  forfeitedAmount     Decimal?       @db.Decimal(12, 2)
+  streakDay           Int?           @db.SmallInt
+  streakBonusEarned   Decimal?       @default(0) @db.Decimal(12, 2)
+  notes               String?        @db.Text
+  completedAt         DateTime?      @db.Timestamptz
+  graceExpiresAt      DateTime?      @db.Timestamptz
+  createdAt           DateTime       @default(now()) @db.Timestamptz
+  updatedAt           DateTime       @updatedAt @db.Timestamptz
+
+  goal          Goal              @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  user          User              @relation(fields: [userId], references: [id])
+  session       ActivitySession?  @relation(fields: [activitySessionId], references: [id])
+
+  @@unique([goalId, taskDate])
+  @@index([userId, taskDate(sort: Desc)])
+  @@index([goalId, taskDate])
+  @@index([status, taskDate])
+  @@map("daily_task_logs")
+}
+
+model ActivitySession {
+  id                  String             @id @default(uuid()) @db.Uuid
+  userId              String             @db.Uuid
+  goalId              String?            @db.Uuid
+  source              ActivitySource
+  activityType        ActivityType
+  startedAt           DateTime           @db.Timestamptz
+  endedAt             DateTime           @db.Timestamptz
+  durationSeconds     Int
+  distanceMeters      Decimal?           @db.Decimal(10, 2)
+  steps               Int?
+  caloriesBurned      Decimal?           @db.Decimal(8, 2)
+  avgHeartRate        Int?               @db.SmallInt
+  maxHeartRate        Int?               @db.SmallInt
+  avgPaceSecsPerKm    Int?
+  elevationGainMeters Decimal?           @db.Decimal(8, 2)
+  gpsAccuracyMeters   Decimal?           @db.Decimal(6, 2)
+  antiSpoofPassed     Boolean?
+  antiSpoofFlags      Json?              @db.JsonB
+  photoUrl            String?            @db.Text
+  photoExifData       Json?              @db.JsonB
+  deviceMetadata      Json?              @db.JsonB
+  rawDataUrl          String?            @db.Text
+  verificationStatus  VerificationStatus @default(pending)
+  createdAt           DateTime           @default(now()) @db.Timestamptz
+
+  user        User            @relation(fields: [userId], references: [id])
+  goal        Goal?           @relation(fields: [goalId], references: [id])
+  routePoints RoutePoint[]
+  dailyLogs   DailyTaskLog[]
+
+  @@index([userId, startedAt(sort: Desc)])
+  @@index([goalId])
+  @@index([verificationStatus])
+  @@map("activity_sessions")
+}
+
+model RoutePoint {
+  id              BigInt   @id @default(autoincrement())
+  sessionId       String   @db.Uuid
+  pointIndex      Int
+  latitude        Decimal  @db.Decimal(10, 7)
+  longitude       Decimal  @db.Decimal(10, 7)
+  altitudeMeters  Decimal? @db.Decimal(8, 2)
+  speedMps        Decimal? @db.Decimal(6, 3)
+  accuracyMeters  Decimal? @db.Decimal(6, 2)
+  recordedAt      DateTime @db.Timestamptz
+  heartRate       Int?     @db.SmallInt
+
+  session ActivitySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, pointIndex])
+  @@index([sessionId, pointIndex])
+  @@map("route_points")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 3: CHALLENGES
+// ──────────────────────────────────────────────
+
+model Challenge {
+  id                  String          @id @default(uuid()) @db.Uuid
+  creatorId           String          @db.Uuid
+  title               String          @db.VarChar(120)
+  description         String?         @db.Text
+  activityType        ActivityType
+  challengeType       ChallengeType
+  prizeModel          PrizeModel      @default(proportional)
+  dailyTaskDesc       String          @db.Text
+  targetValue         Decimal         @db.Decimal(8, 2)
+  targetUnit          TargetUnit
+  verificationMethod  VerificationMethod
+  entryStake          Decimal         @db.Decimal(12, 2)
+  minParticipants     Int             @default(2) @db.SmallInt
+  maxParticipants     Int             @default(50) @db.SmallInt
+  currentParticipants Int             @default(0) @db.SmallInt
+  durationDays        Int             @db.SmallInt
+  registrationStart   DateTime        @db.Timestamptz
+  registrationEnd     DateTime        @db.Timestamptz
+  challengeStart      DateTime        @db.Date
+  challengeEnd        DateTime        @db.Date
+  prizePool           Decimal         @db.Decimal(14, 2)
+  platformFeePct      Decimal         @default(0.08) @db.Decimal(4, 3)
+  coverImageUrl       String?         @db.Text
+  inviteCode          String?         @unique @db.VarChar(12)
+  status              ChallengeStatus @default(draft)
+  corporateName       String?         @db.VarChar(120)
+  charityName         String?         @db.VarChar(120)
+  createdAt           DateTime        @default(now()) @db.Timestamptz
+  updatedAt           DateTime        @updatedAt @db.Timestamptz
+  deletedAt           DateTime?       @db.Timestamptz
+
+  creator         User                    @relation(fields: [creatorId], references: [id])
+  participants    ChallengeParticipant[]
+  chatMessages    GroupChatMessage[]
+
+  @@index([status])
+  @@index([creatorId])
+  @@index([challengeStart])
+  @@index([inviteCode])
+  @@map("challenges")
+}
+
+model ChallengeParticipant {
+  id                    String             @id @default(uuid()) @db.Uuid
+  challengeId           String             @db.Uuid
+  userId                String             @db.Uuid
+  joinedAt              DateTime           @default(now()) @db.Timestamptz
+  stakePaid             Decimal            @db.Decimal(12, 2)
+  tasksCompleted        Int                @default(0) @db.SmallInt
+  tasksMissed           Int                @default(0) @db.SmallInt
+  completionPct         Decimal            @default(0) @db.Decimal(5, 2)
+  currentRank           Int?               @db.SmallInt
+  finalRank             Int?               @db.SmallInt
+  estimatedEarnings     Decimal?           @db.Decimal(12, 2)
+  actualEarnings        Decimal?           @db.Decimal(12, 2)
+  amountForfeited       Decimal?           @db.Decimal(12, 2)
+  status                ParticipantStatus  @default(active)
+  disqualReason         String?            @db.Text
+  createdAt             DateTime           @default(now()) @db.Timestamptz
+  updatedAt             DateTime           @updatedAt @db.Timestamptz
+
+  challenge Challenge @relation(fields: [challengeId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([challengeId, userId])
+  @@index([challengeId, completionPct(sort: Desc)])
+  @@index([userId, status])
+  @@index([challengeId, currentRank])
+  @@map("challenge_participants")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 4: WALLET & FINANCE
+// ──────────────────────────────────────────────
+
+model Wallet {
+  id                   String   @id @default(uuid()) @db.Uuid
+  userId               String   @unique @db.Uuid
+  currency             String   @default("INR") @db.Char(3)
+  availableBalance     Decimal  @default(0) @db.Decimal(12, 2)
+  escrowBalance        Decimal  @default(0) @db.Decimal(12, 2)
+  totalEarnedAllTime   Decimal  @default(0) @db.Decimal(14, 2)
+  totalForfeitedAllTime Decimal @default(0) @db.Decimal(14, 2)
+  totalStakedAllTime   Decimal  @default(0) @db.Decimal(14, 2)
+  totalWithdrawnAllTime Decimal @default(0) @db.Decimal(14, 2)
+  version              BigInt   @default(0)
+  createdAt            DateTime @default(now()) @db.Timestamptz
+  updatedAt            DateTime @updatedAt @db.Timestamptz
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id              String              @id @default(uuid()) @db.Uuid
+  userId          String              @db.Uuid
+  walletId        String              @db.Uuid
+  type            TransactionType
+  direction       TransactionDirection
+  amount          Decimal             @db.Decimal(12, 2)
+  balanceBefore   Decimal             @db.Decimal(12, 2)
+  balanceAfter    Decimal             @db.Decimal(12, 2)
+  currency        String              @default("INR") @db.Char(3)
+  status          TransactionStatus   @default(pending)
+  referenceId     String?             @db.Uuid
+  referenceType   String?             @db.VarChar(50)
+  idempotencyKey  String?             @unique @db.VarChar(128)
+  description     String?             @db.Text
+  metadata        Json?               @db.JsonB
+  createdAt       DateTime            @default(now()) @db.Timestamptz
+  processedAt     DateTime?           @db.Timestamptz
+
+  disputes DisputeTicket[]
+
+  user   User   @relation(fields: [userId], references: [id])
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([walletId, createdAt(sort: Desc)])
+  @@index([referenceId, referenceType])
+  @@index([status])
+  @@map("transactions")
+}
+
+model PaymentOrder {
+  id               String            @id @default(uuid()) @db.Uuid
+  userId           String            @db.Uuid
+  gateway          PaymentGateway
+  gatewayOrderId   String            @unique @db.VarChar(128)
+  gatewayPaymentId String?           @db.VarChar(128)
+  gatewaySignature String?           @db.Text
+  amount           Decimal           @db.Decimal(12, 2)
+  currency         String            @default("INR") @db.Char(3)
+  status           PaymentOrderStatus @default(created)
+  failureReason    String?           @db.Text
+  webhookEvents    Json?             @db.JsonB
+  createdAt        DateTime          @default(now()) @db.Timestamptz
+  updatedAt        DateTime          @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("payment_orders")
+}
+
+model WithdrawalRequest {
+  id              String           @id @default(uuid()) @db.Uuid
+  userId          String           @db.Uuid
+  amount          Decimal          @db.Decimal(12, 2)
+  currency        String           @default("INR") @db.Char(3)
+  bankAccountId   String           @db.Uuid
+  status          WithdrawalStatus @default(pending)
+  gatewayPayoutId String?          @db.VarChar(128)
+  gatewayResponse Json?            @db.JsonB
+  failureReason   String?          @db.Text
+  referenceNumber String?          @db.VarChar(64)
+  expectedDate    DateTime?        @db.Date
+  completedAt     DateTime?        @db.Timestamptz
+  createdAt       DateTime         @default(now()) @db.Timestamptz
+  updatedAt       DateTime         @updatedAt @db.Timestamptz
+
+  user       User           @relation(fields: [userId], references: [id])
+  bankAccount UserBankAccount @relation(fields: [bankAccountId], references: [id])
+
+  @@index([userId, status])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("withdrawal_requests")
+}
+
+model UserBankAccount {
+  id                    String          @id @default(uuid()) @db.Uuid
+  userId                String          @db.Uuid
+  accountHolderName     String          @db.VarChar(120)
+  accountNumberEncrypted String         @db.Text
+  accountNumberLast4   String          @db.Char(4)
+  ifscCode              String          @db.Char(11)
+  bankName              String          @db.VarChar(80)
+  bankBranch            String?         @db.VarChar(120)
+  accountType           BankAccountType @default(savings)
+  isVerified            Boolean         @default(false)
+  isPrimary             Boolean         @default(false)
+  createdAt             DateTime        @default(now()) @db.Timestamptz
+  deletedAt             DateTime?       @db.Timestamptz
+
+  user             User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  withdrawalReqs   WithdrawalRequest[]
+
+  @@index([userId, isPrimary])
+  @@index([userId])
+  @@map("user_bank_accounts")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 5: STREAK & SHIELD
+// ──────────────────────────────────────────────
+
+model Streak {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @db.Uuid
+  goalId              String?   @unique @db.Uuid
+  currentStreak       Int       @default(0) @db.SmallInt
+  bestStreak          Int       @default(0) @db.SmallInt
+  totalDaysCompleted  Int       @default(0) @db.SmallInt
+  lastActivityDate    DateTime? @db.Date
+  streakStartedAt     DateTime? @db.Date
+  shieldRestoresUsed  Int       @default(0) @db.SmallInt
+  shieldRestoresLimit Int       @db.SmallInt
+  fitcoinsFromStreaks Int       @default(0)
+  milestone7At        DateTime? @db.Timestamptz
+  milestone30At       DateTime? @db.Timestamptz
+  milestone100At      DateTime? @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @db.Timestamptz
+
+  user User  @relation(fields: [userId], references: [id])
+  goal Goal? @relation(fields: [goalId], references: [id])
+
+  @@unique([userId, goalId])
+  @@index([userId, currentStreak(sort: Desc)])
+  @@map("streaks")
+}
+
+model StreakShieldSubscription {
+  id                        String             @id @default(uuid()) @db.Uuid
+  userId                    String             @db.Uuid
+  plan                      ShieldPlan
+  billingCycle              BillingCycle
+  pricePaid                 Decimal            @db.Decimal(8, 2)
+  currency                  String             @default("INR") @db.Char(3)
+  restoresPerMonth          Int                @db.SmallInt
+  graceWindowHours          Int                @db.SmallInt
+  status                    SubscriptionStatus @default(trialing)
+  currentPeriodStart        DateTime           @db.Date
+  currentPeriodEnd          DateTime           @db.Date
+  cancelAtPeriodEnd         Boolean            @default(false)
+  cancelledAt               DateTime?          @db.Timestamptz
+  revenueCatProductId       String?            @db.VarChar(100)
+  revenueCatSubscriptionId  String?            @db.VarChar(200)
+  storePlatform             StorePlatform?
+  createdAt                 DateTime           @default(now()) @db.Timestamptz
+  updatedAt                 DateTime           @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([status, currentPeriodEnd])
+  @@map("streak_shield_subscriptions")
+}
+
+model FitCoinLedger {
+  id           String          @id @default(uuid()) @db.Uuid
+  userId       String          @db.Uuid
+  type         FitCoinTxType
+  direction    TransactionDirection
+  amount       Int
+  balanceAfter Int
+  referenceId  String?         @db.Uuid
+  description  String?         @db.Text
+  createdAt    DateTime        @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("fitcoin_ledger")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 6: SOCIAL
+// ──────────────────────────────────────────────
+
+model Friendship {
+  id            String           @id @default(uuid()) @db.Uuid
+  requesterId   String           @db.Uuid
+  addresseeId   String           @db.Uuid
+  status        FriendshipStatus @default(pending)
+  createdAt     DateTime         @default(now()) @db.Timestamptz
+  updatedAt     DateTime         @updatedAt @db.Timestamptz
+
+  requester User @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee User @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status])
+  @@index([status])
+  @@map("friendships")
+}
+
+model Referral {
+  id              String         @id @default(uuid()) @db.Uuid
+  referrerId      String         @db.Uuid
+  referredId      String?        @unique @db.Uuid
+  referralCode    String         @unique @db.VarChar(12)
+  referralLink    String         @db.Text
+  status          ReferralStatus @default(pending)
+  referrerBonus   Decimal?       @db.Decimal(8, 2)
+  referredBonus   Decimal?       @db.Decimal(8, 2)
+  signedUpAt      DateTime?      @db.Timestamptz
+  goalCreatedAt   DateTime?      @db.Timestamptz
+  bonusPaidAt     DateTime?      @db.Timestamptz
+  createdAt       DateTime       @default(now()) @db.Timestamptz
+
+  referrer User @relation("ReferralReferrer", fields: [referrerId], references: [id])
+  referred User? @relation("ReferralReferred", fields: [referredId], references: [id])
+
+  @@index([referralCode])
+  @@index([referrerId])
+  @@index([referredId])
+  @@map("referrals")
+}
+
+model GroupChatMessage {
+  id              String      @id @default(uuid()) @db.Uuid
+  challengeId     String      @db.Uuid
+  senderId        String      @db.Uuid
+  messageType     MessageType @default(text)
+  content         String?     @db.Text
+  stickerId       String?     @db.VarChar(50)
+  routeSessionId  String?     @db.Uuid
+  systemEvent     String?     @db.VarChar(100)
+  isPinned        Boolean     @default(false)
+  editedAt        DateTime?   @db.Timestamptz
+  deletedAt       DateTime?   @db.Timestamptz
+  createdAt       DateTime    @default(now()) @db.Timestamptz
+
+  challenge Challenge     @relation(fields: [challengeId], references: [id])
+  sender    User          @relation(fields: [senderId], references: [id])
+  reactions MessageReaction[]
+
+  @@index([challengeId, createdAt(sort: Desc)])
+  @@index([senderId])
+  @@index([isPinned])
+  @@map("group_chat_messages")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid()) @db.Uuid
+  messageId String   @db.Uuid
+  userId    String   @db.Uuid
+  emoji     String   @db.VarChar(8)
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  message GroupChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 7: NOTIFICATIONS
+// ──────────────────────────────────────────────
+
+model Notification {
+  id                  String          @id @default(uuid()) @db.Uuid
+  userId              String          @db.Uuid
+  type                NotificationType
+  title               String          @db.VarChar(120)
+  body                String          @db.Text
+  deepLinkScreen      String?         @db.VarChar(100)
+  deepLinkParams      Json?           @db.JsonB
+  isRead              Boolean         @default(false)
+  readAt              DateTime?       @db.Timestamptz
+  pushSent            Boolean         @default(false)
+  pushSentAt          DateTime?       @db.Timestamptz
+  pushDeliveryStatus  String?         @db.VarChar(20) // sent, delivered, failed
+  referenceId         String?         @db.Uuid
+  referenceType       String?         @db.VarChar(50)
+  createdAt           DateTime        @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([userId, type, createdAt(sort: Desc)])
+  @@index([pushSent])
+  @@map("notifications")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 8: ACHIEVEMENTS & LEADERBOARD
+// ──────────────────────────────────────────────
+
+model BadgeDefinition {
+  id               String          @id @default(uuid()) @db.Uuid
+  slug             String          @unique @db.VarChar(60)
+  name             String          @db.VarChar(80)
+  description      String          @db.Text
+  category         BadgeCategory
+  iconUrl          String          @db.Text
+  colorHex         String?         @db.Char(6)
+  rarity           BadgeRarity
+  requirementType  RequirementType
+  requirementValue Int
+  fitcoinReward    Int             @default(0) @db.SmallInt
+  isActive         Boolean         @default(true)
+  createdAt        DateTime        @default(now()) @db.Timestamptz
+
+  userAchievements UserAchievement[]
+
+  @@index([slug])
+  @@index([category])
+  @@map("badge_definitions")
+}
+
+model UserAchievement {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  badgeId       String   @db.Uuid
+  earnedAt      DateTime @default(now()) @db.Timestamptz
+  referenceId   String?  @db.Uuid
+  referenceType String?  @db.VarChar(50)
+
+  user  User            @relation(fields: [userId], references: [id])
+  badge BadgeDefinition @relation(fields: [badgeId], references: [id])
+
+  @@unique([userId, badgeId])
+  @@index([badgeId])
+  @@index([earnedAt(sort: Desc)])
+  @@map("user_achievements")
+}
+
+model LeaderboardCache {
+  id          String             @id @default(uuid()) @db.Uuid
+  scope       LeaderboardScope
+  metric      LeaderboardMetric
+  period      LeaderboardPeriod
+  userId      String             @db.Uuid
+  rank        Int
+  value       Decimal            @db.Decimal(12, 2)
+  city        String?            @db.VarChar(100)
+  challengeId String?            @db.Uuid
+  snapshotAt  DateTime           @db.Timestamptz
+  expiresAt   DateTime           @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([scope, metric, period, rank])
+  @@index([userId, scope, metric, period])
+  @@index([expiresAt])
+  @@map("leaderboard_cache")
+}
+
+// ──────────────────────────────────────────────
+// DOMAIN 9: KYC, ADMIN & SYSTEM
+// ──────────────────────────────────────────────
+
+model KYCVerification {
+  id                     String     @id @default(uuid()) @db.Uuid
+  userId                 String     @unique @db.Uuid
+  fullLegalName          String     @db.VarChar(200)
+  dateOfBirth            DateTime   @db.Date
+  panNumberEncrypted     String     @db.VarChar(512)
+  panLast4               String     @db.Char(4)
+  aadhaarNumberEncrypted String?    @db.VarChar(512)
+  documentType           String?    @db.VarChar(30) // pan, aadhaar, passport, driving_license
+  documentFrontUrl       String?    @db.Text
+  documentBackUrl        String?    @db.Text
+  selfieUrl              String?    @db.Text
+  status                 KYCStatus  @default(not_started)
+  rejectionReason        String?    @db.Text
+  kycProvider            String?    @db.VarChar(50)
+  providerReferenceId    String?    @db.VarChar(200)
+  approvedAt             DateTime?  @db.Timestamptz
+  reviewedById           String?    @db.Uuid
+  createdAt              DateTime   @default(now()) @db.Timestamptz
+  updatedAt              DateTime   @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([status])
+  @@map("kyc_verifications")
+}
+
+model WearableConnection {
+  id                   String            @id @default(uuid()) @db.Uuid
+  userId               String            @db.Uuid
+  platform             WearablePlatform
+  accessTokenEncrypted String            @db.Text
+  refreshTokenEncrypted String?          @db.Text
+  tokenExpiresAt       DateTime?         @db.Timestamptz
+  scopes               String[]          @db.Text
+  platformUserId       String?           @db.VarChar(200)
+  lastSyncedAt         DateTime?         @db.Timestamptz
+  syncEnabled          Boolean           @default(true)
+  errorCount           Int               @default(0) @db.SmallInt
+  lastError            String?           @db.Text
+  createdAt            DateTime          @default(now()) @db.Timestamptz
+  updatedAt            DateTime          @updatedAt @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform])
+  @@index([tokenExpiresAt])
+  @@index([lastSyncedAt])
+  @@map("wearable_connections")
+}
+
+model SystemAuditLog {
+  id           BigInt        @id @default(autoincrement())
+  actorId      String?       @db.Uuid
+  actorType    AuditActorType
+  action       String        @db.VarChar(100)
+  resourceType String        @db.VarChar(50)
+  resourceId   String?       @db.Uuid
+  oldValue     Json?         @db.JsonB
+  newValue     Json?         @db.JsonB
+  ipAddress    String?       @db.Inet
+  userAgent    String?       @db.Text
+  requestId    String?       @db.Uuid
+  createdAt    DateTime      @default(now()) @db.Timestamptz
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([resourceType, resourceId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("system_audit_logs")
+}
+
+model DisputeTicket {
+  id                String        @id @default(uuid()) @db.Uuid
+  userId            String        @db.Uuid
+  transactionId     String        @db.Uuid
+  dailyTaskLogId    String?       @db.Uuid
+  reason            String        @db.Text
+  status            DisputeStatus @default(open)
+  resolutionNotes   String?       @db.Text
+  resolvedById      String?       @db.Uuid
+  compensationAmount Decimal?     @db.Decimal(12, 2)
+  goodwillCredit    Decimal?      @db.Decimal(8, 2)
+  createdAt         DateTime      @default(now()) @db.Timestamptz
+  resolvedAt        DateTime?     @db.Timestamptz
+  slaDeadline       DateTime      @db.Timestamptz
+
+  user        User         @relation(fields: [userId], references: [id])
+  transaction Transaction  @relation(fields: [transactionId], references: [id])
+
+  @@index([userId, status])
+  @@index([status, slaDeadline])
+  @@map("dispute_tickets")
+}
