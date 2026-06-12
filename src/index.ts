@@ -6,8 +6,16 @@ import { PrismaClient } from '@prisma/client';
 export const prisma = new PrismaClient();
 
 // Allow JSON serialization of BigInt (Prisma returns BigInt for @db.BigInt fields)
+// 1. Extend the global BigInt interface so TypeScript recognizes the property
+declare global {
+  interface BigInt {
+    toJSON(): string;
+  }
+}
+
+// 2. Implement the toJSON method
 BigInt.prototype.toJSON = function () {
-  return Number(this);
+  return this.toString();
 };
 
 const app = express();
@@ -55,6 +63,8 @@ app.use('/api/devices', deviceRoutes);
 app.use('/api/wearables', wearableRoutes);
 app.use('/api/disputes', disputeRoutes);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`FitStake API running on 0.0.0.0:${PORT}`);
+// Use the parsed number in your listen call
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
+
