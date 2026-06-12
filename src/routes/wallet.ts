@@ -54,7 +54,10 @@ router.get('/transactions/:id', authenticate, async (req: Request, res: Response
 router.post('/add', authenticate, validate(addMoneySchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const { amount, gateway, gatewayOrderId } = req.body;
+    let { amount, gateway } = req.body;
+    const gatewayOrderId = req.body.gatewayOrderId ?? crypto.randomUUID();
+    const gatewayMap: Record<string, string> = { upi: 'upi_direct', card: 'razorpay', netbanking: 'razorpay' };
+    gateway = gatewayMap[gateway] ?? gateway;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.paymentOrder.create({

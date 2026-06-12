@@ -72,8 +72,8 @@ export const shieldDaySchema = z.object({
 
 export const addMoneySchema = z.object({
   amount: z.number().positive(),
-  gateway: z.enum(['razorpay', 'stripe', 'upi_direct']),
-  gatewayOrderId: z.string(),
+  gateway: z.enum(['razorpay', 'stripe', 'upi_direct', 'upi', 'card', 'netbanking']),
+  gatewayOrderId: z.string().optional(),
 });
 
 export const withdrawSchema = z.object({
