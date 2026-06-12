@@ -173,24 +173,26 @@ router.post('/complete', authenticate, validate(completeTaskSchema), async (req:
     const userId = req.user!.userId;
     const { goalId, activitySessionId } = req.body;
 
-    const goal = await prisma.goal.findFirst({ where: { id: goalId, userId } });
+    const goal = await prisma.goal.findFirst({ where: { id: goalId, userId, deletedAt: null } });
     if (!goal || goal.status !== 'active') {
       return res.status(400).json({ error: 'Goal not found or not active' });
     }
 
     const today = new Date().toISOString().split('T')[0];
     const existing = await prisma.dailyTaskLog.findFirst({
-      where: { goalId, taskDate: new Date(today) },
+      where: { goalId, taskDate: new Date(today) }
     });
-    if (existing?.status === 'completed') {
+if (existing?.status === 'completed') {
       return res.status(400).json({ error: 'Task already completed today' });
     }
-
-    const session = await prisma.activitySession.findUnique({ where: { id: activitySessionId } });
 
     const logCount = await prisma.dailyTaskLog.count({
       where: { goalId, status: 'completed' },
     });
+
+    const session = activitySessionId
+      ? await prisma.activitySession.findUnique({ where: { id: activitySessionId } })
+      : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const log = await tx.dailyTaskLog.create({
@@ -205,22 +207,27 @@ router.post('/complete', authenticate, validate(completeTaskSchema), async (req:
         },
       });
 
+      const dailyEarnback = Number(goal.dailyEarnback);
+
       await tx.goal.update({
         where: { id: goalId },
         data: {
-          totalEarned: { increment: goal.dailyEarnback },
+          totalEarned: { increment: dailyEarnback },
           status: logCount + 1 >= goal.durationDays ? 'completed' : 'active',
         },
       });
 
       const wallet = await tx.wallet.findUnique({ where: { userId } });
+       if (!wallet) {
+         throw new Error('Wallet not found for user');
+       }
 
-      await tx.wallet.update({
+       await tx.wallet.update({
         where: { userId },
         data: {
-          availableBalance: { increment: goal.dailyEarnback },
-          escrowBalance: { decrement: goal.dailyEarnback },
-          totalEarnedAllTime: { increment: goal.dailyEarnback },
+          availableBalance: { increment: dailyEarnback },
+          escrowBalance: { decrement: dailyEarnback },
+          totalEarnedAllTime: { increment: dailyEarnback },
           version: { increment: 1 },
         },
       });
@@ -231,9 +238,9 @@ router.post('/complete', authenticate, validate(completeTaskSchema), async (req:
           walletId: wallet!.id,
           type: 'earnback',
           direction: 'credit',
-          amount: goal.dailyEarnback,
+          amount: dailyEarnback,
           balanceBefore: wallet!.availableBalance,
-          balanceAfter: Number(wallet!.availableBalance) + Number(goal.dailyEarnback),
+          balanceAfter: Number(wallet!.availableBalance) + dailyEarnback,
           status: 'completed',
           referenceId: goalId,
           referenceType: 'goal',
@@ -244,9 +251,16 @@ router.post('/complete', authenticate, validate(completeTaskSchema), async (req:
 
       const streak = await tx.streak.findUnique({ where: { userId_goalId: { userId, goalId } } });
       if (streak) {
-        const newStreak = { ...streak, currentStreak: streak.currentStreak + 1, totalDaysCompleted: streak.totalDaysCompleted + 1, lastActivityDate: new Date(today) };
-        newStreak.bestStreak = Math.max(newStreak.bestStreak, newStreak.currentStreak);
-        await tx.streak.update({ where: { id: streak.id }, data: newStreak });
+        const newCurrentStreak = streak.currentStreak + 1;
+        await tx.streak.update({ 
+          where: { id: streak.id }, 
+          data: { 
+            currentStreak: newCurrentStreak, 
+            totalDaysCompleted: streak.totalDaysCompleted + 1, 
+            lastActivityDate: new Date(today),
+            bestStreak: Math.max(streak.bestStreak, newCurrentStreak)
+          } 
+        });
       }
 
       return log;

@@ -59,30 +59,46 @@ router.post('/add', authenticate, validate(addMoneySchema), async (req: Request,
     const gatewayMap: Record<string, string> = { upi: 'upi_direct', card: 'razorpay', netbanking: 'razorpay' };
     gateway = gatewayMap[gateway] ?? gateway;
 
+    console.log('[Wallet Add] Request:', { userId, amount, gateway, gatewayOrderId });
+
+    // Log wallet BEFORE
+    const beforeWallet = await prisma.wallet.findUnique({ where: { userId } });
+    console.log('[Wallet Add] Wallet BEFORE:', JSON.stringify(beforeWallet));
+
+    if (!beforeWallet) {
+      console.error('[Wallet Add] No wallet found for user:', userId);
+      return res.status(400).json({ error: 'Wallet not found' });
+    }
+
     const result = await prisma.$transaction(async (tx) => {
+      console.log('[Wallet Add] Creating payment order...');
       const order = await tx.paymentOrder.create({
         data: { userId, gateway, gatewayOrderId, amount, status: 'paid' },
       });
+      console.log('[Wallet Add] Payment order created:', order.id);
 
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-
-      await tx.wallet.update({
+      console.log('[Wallet Add] Updating wallet balance...');
+      const updatedWallet = await tx.wallet.update({
         where: { userId },
         data: {
           availableBalance: { increment: amount },
           version: { increment: 1 },
         },
       });
+      console.log('[Wallet Add] Wallet AFTER update:', JSON.stringify(updatedWallet));
 
+      console.log('[Wallet Add] Creating transaction record...');
+      const balanceBefore = Number(beforeWallet.availableBalance);
+      const balanceAfter = balanceBefore + Number(amount);
       const txRecord = await tx.transaction.create({
         data: {
           userId,
-          walletId: wallet!.id,
+          walletId: beforeWallet.id,
           type: 'deposit',
           direction: 'credit',
           amount,
-          balanceBefore: wallet!.availableBalance,
-          balanceAfter: wallet!.availableBalance + amount,
+          balanceBefore,
+          balanceAfter,
           status: 'completed',
           referenceId: order.id,
           referenceType: 'payment_order',
@@ -90,13 +106,15 @@ router.post('/add', authenticate, validate(addMoneySchema), async (req: Request,
           processedAt: new Date(),
         },
       });
+      console.log('[Wallet Add] Transaction created:', txRecord.id);
 
       return { order, transaction: txRecord };
     });
 
+    console.log('[Wallet Add] Success — sending 201 response');
     res.status(201).json(result);
   } catch (err) {
-    console.error('Add money error:', err);
+    console.error('[Wallet Add] ERROR:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -5,6 +5,11 @@ import { PrismaClient } from '@prisma/client';
 
 export const prisma = new PrismaClient();
 
+// Allow JSON serialization of BigInt (Prisma returns BigInt for @db.BigInt fields)
+BigInt.prototype.toJSON = function () {
+  return Number(this);
+};
+
 const app = express();
 const PORT = process.env.PORT ?? 3000;
 
@@ -50,6 +55,6 @@ app.use('/api/devices', deviceRoutes);
 app.use('/api/wearables', wearableRoutes);
 app.use('/api/disputes', disputeRoutes);
 
-app.listen(PORT, () => {
-  console.log(`FitStake API running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`FitStake API running on 0.0.0.0:${PORT}`);
 });
