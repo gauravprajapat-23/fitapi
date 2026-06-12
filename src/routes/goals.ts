@@ -280,7 +280,7 @@ router.post('/shield', authenticate, validate(shieldDaySchema), async (req: Requ
       });
     });
 
-    res.status(201).json({ message: 'Day shielded' });
+    res.status(201).json({ log: { goalId, date, status: 'shielded' } });
   } catch (err) {
     console.error('Shield error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -344,7 +344,7 @@ router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
       });
     });
 
-    res.json({ message: 'Day marked as missed' });
+    res.json({ log: { goalId, date: today, status: 'missed', forfeitedAmount: goal.dailyEarnback }, forfeitedAmount: goal.dailyEarnback });
   } catch (err) {
     console.error('Forfeit error:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -155,7 +155,7 @@ router.get('/bank-accounts', authenticate, async (req: Request, res: Response) =
     const accounts = await prisma.userBankAccount.findMany({
       where: { userId: req.user!.userId, deletedAt: null },
     });
-    res.json({ bankAccounts: accounts });
+    res.json({ accounts });
   } catch (err) {
     console.error('Bank accounts error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -232,6 +232,22 @@ router.get('/analytics', authenticate, async (req: Request, res: Response) => {
     res.json({ analytics: { totalEarned, totalSpent, transactionCount: txs.length, breakdown: byType } });
   } catch (err) {
     console.error('Analytics error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/wallet/fitcoins
+router.get('/fitcoins', authenticate, async (req: Request, res: Response) => {
+  try {
+    const ledger = await prisma.fitCoinLedger.findMany({
+      where: { userId: req.user!.userId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    const balance = ledger.length > 0 ? ledger[0].balanceAfter : 0;
+    res.json({ fitcoins: { balance, ledger } });
+  } catch (err) {
+    console.error('Fitcoin error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

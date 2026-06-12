@@ -8,7 +8,7 @@ const router = Router();
 router.get('/:id/profile', async (req: Request, res: Response) => {
   try {
     const profile = await prisma.userProfile.findUnique({
-      where: { id: req.params.id as string },
+      where: { userId: req.params.id as string },
       include: { user: { select: { createdAt: true } } },
     });
 
@@ -67,7 +67,7 @@ router.get('/:id/profile', async (req: Request, res: Response) => {
 router.get('/:id/stats', async (req: Request, res: Response) => {
   try {
     const profile = await prisma.userProfile.findUnique({
-      where: { id: req.params.id as string },
+      where: { userId: req.params.id as string },
     });
 
     if (!profile) {

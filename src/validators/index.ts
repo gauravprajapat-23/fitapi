@@ -3,6 +3,7 @@ import { z } from 'zod';
 // ── Auth ──
 
 export const registerSchema = z.object({
+  ref: z.string().max(12).optional(),
   email: z.string().email().max(320),
   phone: z.string().regex(/^\+91\d{10}$/, 'Must be +91 followed by 10 digits').optional(),
   password: z.string().min(8, 'Password must be at least 8 characters'),
@@ -153,4 +154,18 @@ export const updateGoalSchema = z.object({
   verificationMethod: z.enum(['gps', 'wearable', 'photo', 'manual']).optional(),
   restDaysEnabled: z.boolean().optional(),
   restDayOfWeek: z.array(z.number().int().min(1).max(7)).optional(),
+});
+
+// -- Subscription / Shield Plan --
+
+export const createSubscriptionSchema = z.object({
+  plan: z.enum(['basic', 'pro', 'elite']),
+  billingCycle: z.enum(['monthly', 'annual']).default('monthly'),
+  storePlatform: z.enum(['app_store', 'play_store', 'web']).default('web'),
+  revenueCatProductId: z.string().optional(),
+  revenueCatSubscriptionId: z.string().optional(),
+});
+
+export const cancelSubscriptionSchema = z.object({
+  reason: z.string().optional(),
 });

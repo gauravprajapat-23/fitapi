@@ -28,28 +28,28 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-// PATCH /api/notifications/read/:id
-router.patch('/read/:id', authenticate, async (req: Request, res: Response) => {
+// PATCH /api/notifications/:id/read
+router.patch('/:id/read', authenticate, async (req: Request, res: Response) => {
   try {
     const notif = await prisma.notification.updateMany({
       where: { id: req.params.id as string, userId: req.user!.userId },
       data: { isRead: true, readAt: new Date() },
     });
-    res.json({ updated: notif.count });
+    res.json({ notification: notif.count });
   } catch (err) {
     console.error('Notification read error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// PATCH /api/notifications/read-all
-router.patch('/read-all', authenticate, async (req: Request, res: Response) => {
+// POST /api/notifications/read-all
+router.post('/read-all', authenticate, async (req: Request, res: Response) => {
   try {
     const result = await prisma.notification.updateMany({
       where: { userId: req.user!.userId, isRead: false },
       data: { isRead: true, readAt: new Date() },
     });
-    res.json({ updated: result.count });
+    res.json({ success: true });
   } catch (err) {
     console.error('Read all error:', err);
     res.status(500).json({ error: 'Internal server error' });

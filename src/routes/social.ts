@@ -120,6 +120,24 @@ router.get('/referral-code', authenticate, async (req: Request, res: Response) =
   }
 });
 
+
+// GET /api/social/referral-stats
+router.get("/referral-stats", authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const referral = await prisma.referral.findFirst({ where: { referrerId: userId } });
+    if (!referral) {
+      return res.json({ stats: { totalReferrals: 0, signedUp: 0, bonusEarned: 0, referralCode: null } });
+    }
+    const referredCount = await prisma.referral.count({ where: { referrerId: userId, referredId: { not: null } } });
+    const signedUpCount = await prisma.referral.count({ where: { referrerId: userId, status: { in: ["signed_up", "goal_created", "bonus_paid"] } } });
+    const bonusEarned = Number(referral.referrerBonus ?? 0);
+    res.json({ stats: { totalReferrals: referredCount, signedUp: signedUpCount, bonusEarned, referralCode: referral.referralCode, referralLink: referral.referralLink } });
+  } catch (err) {
+    console.error("Referral stats error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 // ── Chat ──
 
 // GET /api/social/chat/:challengeId
@@ -158,4 +176,128 @@ router.post('/chat', authenticate, validate(sendMessageSchema), async (req: Requ
   }
 });
 
+// ── Message Reactions ──
+
+// POST /api/social/chat/:messageId/reactions
+router.post('/chat/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji || emoji.length > 8) {
+      return res.status(400).json({ error: 'Invalid emoji' });
+    }
+    const messageId = req.params.messageId as string;
+    const reaction = await prisma.messageReaction.upsert({
+      where: {
+        messageId_userId_emoji: {
+          messageId,
+          userId: req.user!.userId,
+          emoji,
+        },
+      },
+      create: {
+        messageId,
+        userId: req.user!.userId,
+        emoji,
+      },
+      update: {},
+    });
+    res.status(201).json({ reaction });
+  } catch (err) {
+    console.error('Reaction add error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/social/chat/:messageId/reactions
+router.delete('/chat/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji) {
+      return res.status(400).json({ error: 'Emoji required' });
+    }
+    await prisma.messageReaction.deleteMany({
+      where: {
+        messageId: req.params.messageId as string,
+        userId: req.user!.userId,
+        emoji,
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Reaction remove error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;
+
+// -- Search --
+
+// GET /api/social/search?q=...
+router.get('/search', authenticate, async (req: Request, res: Response) => {
+  try {
+    const query = (req.query.q as string)?.trim();
+    if (!query || query.length < 2) {
+      return res.json({ users: [] });
+    }
+
+    const users = await prisma.user.findMany({
+      where: {
+        id: { not: req.user!.userId },
+        OR: [
+          { profile: { username: { contains: query, mode: 'insensitive' } } },
+          { profile: { displayName: { contains: query, mode: 'insensitive' } } },
+          { email: { contains: query, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        profile: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+            bio: true,
+            city: true,
+            fitnessLevel: true,
+          },
+        },
+      },
+      take: 20,
+    });
+
+    // Check friendship status for each result
+    const userIds = users.map(u => u.id);
+    const friendships = await prisma.friendship.findMany({
+      where: {
+        OR: [
+          { requesterId: req.user!.userId, addresseeId: { in: userIds } },
+          { addresseeId: req.user!.userId, requesterId: { in: userIds } },
+        ],
+      },
+      select: { requesterId: true, addresseeId: true, status: true },
+    });
+    const friendshipMap = new Map<string, string>();
+    for (const f of friendships) {
+      const otherId = f.requesterId === req.user!.userId ? f.addresseeId : f.requesterId;
+      friendshipMap.set(otherId, f.status);
+    }
+
+    const mapped = users.map(u => ({
+      id: u.id,
+      username: u.profile?.username,
+      displayName: u.profile?.displayName,
+      avatarUrl: u.profile?.avatarUrl,
+      bio: u.profile?.bio,
+      city: u.profile?.city,
+      fitnessLevel: u.profile?.fitnessLevel,
+      friendshipStatus: friendshipMap.get(u.id) ?? 'none',
+    }));
+
+    res.json({ users: mapped });
+  } catch (err) {
+    console.error('User search error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});

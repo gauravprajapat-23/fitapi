@@ -39,6 +39,19 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
 
     const token = signToken({ userId: user.id, email: user.email });
 
+    
+    // Handle referral code during signup
+    const refCode = (req.query.ref || req.body.ref) as string | undefined;
+    if (refCode) {
+      const referral = await prisma.referral.findUnique({ where: { referralCode: refCode } });
+      if (referral && !referral.referredId) {
+        await prisma.referral.update({
+          where: { id: referral.id },
+          data: { referredId: user.id, status: 'signed_up', signedUpAt: new Date() },
+        });
+      }
+    }
+
     res.status(201).json({ token, user });
   } catch (err) {
     console.error('Register error:', err);
@@ -176,6 +189,38 @@ router.get('/kyc', authenticate, async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error('KYC get error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/auth/settings
+router.get('/settings', authenticate, async (req: Request, res: Response) => {
+  try {
+    const settings = await prisma.userSetting.findUnique({
+      where: { userId: req.user!.userId },
+    });
+    res.json({ settings });
+  } catch (err) {
+    console.error('Settings get error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/auth/settings
+router.patch('/settings', authenticate, async (req: Request, res: Response) => {
+  try {
+    const allowed = ['currency', 'language', 'timezone', 'theme', 'distanceUnit', 'notifTaskReminder', 'notifStreakAlert', 'notifChallengeUpdate', 'notifWallet', 'notifMarketing', 'reminderTime', 'biometricAuthEnabled', 'shareActivityPublicly', 'showGoalsOnProfile'];
+    const data: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) data[key] = req.body[key];
+    }
+    const settings = await prisma.userSetting.update({
+      where: { userId: req.user!.userId },
+      data,
+    });
+    res.json({ settings });
+  } catch (err) {
+    console.error('Settings update error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
