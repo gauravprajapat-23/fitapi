@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { signToken } from '../lib/jwt';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { registerSchema, loginSchema, otpSendSchema, otpVerifySchema, updateProfileSchema } from '../validators';
+import { registerSchema, loginSchema, otpSendSchema, otpVerifySchema, updateProfileSchema, submitKycSchema } from '../validators';
 
 const router = Router();
 
@@ -106,6 +106,76 @@ router.patch('/profile', authenticate, validate(updateProfileSchema), async (req
     res.json({ profile });
   } catch (err) {
     console.error('Profile update error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/kyc
+router.post('/kyc', authenticate, validate(submitKycSchema), async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { fullLegalName, dateOfBirth, panNumber, aadhaarNumber } = req.body;
+
+    const existing = await prisma.kYCVerification.findUnique({
+      where: { userId },
+    });
+
+    if (existing && existing.status === 'approved') {
+      return res.status(400).json({ error: 'KYC already verified' });
+    }
+
+    const kyc = await prisma.kYCVerification.upsert({
+      where: { userId },
+      create: {
+        userId,
+        fullLegalName,
+        dateOfBirth: new Date(dateOfBirth),
+        panNumberEncrypted: panNumber,
+        panLast4: panNumber.slice(-4),
+        aadhaarNumberEncrypted: aadhaarNumber,
+        status: 'pending',
+      },
+      update: {
+        fullLegalName,
+        dateOfBirth: new Date(dateOfBirth),
+        panNumberEncrypted: panNumber,
+        panLast4: panNumber.slice(-4),
+        aadhaarNumberEncrypted: aadhaarNumber,
+        status: 'pending',
+        rejectionReason: null,
+      },
+    });
+
+    res.status(201).json({ kyc, message: 'KYC submitted for review' });
+  } catch (err) {
+    console.error('KYC submission error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/auth/kyc
+router.get('/kyc', authenticate, async (req: Request, res: Response) => {
+  try {
+    const kyc = await prisma.kYCVerification.findUnique({
+      where: { userId: req.user!.userId },
+    });
+
+    if (!kyc) {
+      return res.json({ kyc: null, status: 'not_started' });
+    }
+
+    res.json({
+      kyc: {
+        status: kyc.status,
+        fullLegalName: kyc.fullLegalName,
+        panLast4: kyc.panLast4,
+        rejectionReason: kyc.rejectionReason,
+        createdAt: kyc.createdAt,
+        updatedAt: kyc.updatedAt,
+      },
+    });
+  } catch (err) {
+    console.error('KYC get error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

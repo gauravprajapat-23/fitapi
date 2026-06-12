@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createGoalSchema, completeTaskSchema, shieldDaySchema } from '../validators';
+import { createGoalSchema, completeTaskSchema, shieldDaySchema, updateGoalSchema } from '../validators';
 
 const router = Router();
 
@@ -12,9 +12,17 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     const goals = await prisma.goal.findMany({
       where: { userId: req.user!.userId, deletedAt: null, status: { not: 'expired' } },
       orderBy: { createdAt: 'desc' },
-      include: { dailyLogs: { take: 30, orderBy: { taskDate: 'desc' } } },
+      include: {
+        dailyLogs: { take: 30, orderBy: { taskDate: 'desc' } },
+        streak: true,
+      },
     });
-    res.json({ goals });
+    res.json({
+      goals: goals.map(g => ({
+        ...g,
+        completedDays: g.dailyLogs.filter(l => l.status === 'completed').length,
+      })),
+    });
   } catch (err) {
     console.error('Goals list error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -26,12 +34,49 @@ router.get('/:id', authenticate, async (req: Request, res: Response) => {
   try {
     const goal = await prisma.goal.findFirst({
       where: { id: req.params.id as string, userId: req.user!.userId, deletedAt: null },
-      include: { dailyLogs: { orderBy: { taskDate: 'desc' } } },
+      include: {
+        dailyLogs: { orderBy: { taskDate: 'desc' } },
+        streak: true,
+      },
     });
     if (!goal) return res.status(404).json({ error: 'Goal not found' });
-    res.json({ goal });
+    res.json({
+      goal: {
+        ...goal,
+        completedDays: goal.dailyLogs.filter(l => l.status === 'completed').length,
+      },
+    });
   } catch (err) {
     console.error('Goal get error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/goals/:id
+router.patch('/:id', authenticate, validate(updateGoalSchema), async (req: Request, res: Response) => {
+  try {
+    const goal = await prisma.goal.findFirst({
+      where: { id: req.params.id as string, userId: req.user!.userId, deletedAt: null },
+    });
+    if (!goal) return res.status(404).json({ error: 'Goal not found' });
+
+    const updated = await prisma.goal.update({
+      where: { id: goal.id },
+      data: req.body,
+      include: {
+        dailyLogs: { orderBy: { taskDate: 'desc' } },
+        streak: true,
+      },
+    });
+
+    res.json({
+      goal: {
+        ...updated,
+        completedDays: updated.dailyLogs.filter(l => l.status === 'completed').length,
+      },
+    });
+  } catch (err) {
+    console.error('Goal update error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -102,14 +147,20 @@ router.post('/', authenticate, validate(createGoalSchema), async (req: Request, 
         },
       });
 
-      await tx.streak.create({
+      const streak = await tx.streak.create({
         data: { userId, goalId: g.id, shieldRestoresLimit: 0 },
       });
 
-      return g;
+      return { ...g, streak };
     });
 
-    res.status(201).json({ goal });
+    res.status(201).json({
+      goal: {
+        ...goal,
+        completedDays: 0,
+        dailyLogs: [],
+      },
+    });
   } catch (err) {
     console.error('Goal create error:', err);
     res.status(500).json({ error: 'Internal server error' });

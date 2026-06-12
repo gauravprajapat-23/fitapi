@@ -25,6 +25,9 @@ import challengeRoutes from './routes/challenges';
 import socialRoutes from './routes/social';
 import notificationRoutes from './routes/notifications';
 import adminRoutes from './routes/admin';
+import streakRoutes from './routes/streak';
+import achievementsRoutes from './routes/achievements';
+import userRoutes from './routes/user';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/goals', goalsRoutes);
@@ -33,6 +36,9 @@ app.use('/api/challenges', challengeRoutes);
 app.use('/api/social', socialRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/streak', streakRoutes);
+app.use('/api/achievements', achievementsRoutes);
+app.use('/api/user', userRoutes);
 
 app.listen(PORT, () => {
   console.log(`FitStake API running on port ${PORT}`);

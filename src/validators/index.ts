@@ -59,7 +59,7 @@ export const createGoalSchema = z.object({
 
 export const completeTaskSchema = z.object({
   goalId: z.string().uuid(),
-  activitySessionId: z.string().uuid(),
+  activitySessionId: z.string().uuid().optional(),
 });
 
 export const shieldDaySchema = z.object({
@@ -138,4 +138,19 @@ export const submitKycSchema = z.object({
   dateOfBirth: z.string(),
   panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/, 'Invalid PAN format'),
   aadhaarNumber: z.string().regex(/^\d{12}$/, 'Invalid Aadhaar format').optional(),
+});
+
+export const useShieldRestoreSchema = z.object({
+  goalId: z.string().uuid().optional(),
+  date: z.string().optional(),
+});
+
+export const updateGoalSchema = z.object({
+  title: z.string().min(1).max(120).optional(),
+  taskDescription: z.string().min(1).optional(),
+  targetValue: z.number().positive().optional(),
+  targetUnit: z.enum(['km', 'miles', 'steps', 'minutes', 'sessions']).optional(),
+  verificationMethod: z.enum(['gps', 'wearable', 'photo', 'manual']).optional(),
+  restDaysEnabled: z.boolean().optional(),
+  restDayOfWeek: z.array(z.number().int().min(1).max(7)).optional(),
 });
