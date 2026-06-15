@@ -17,6 +17,12 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
+      include: {
+        participants: {
+          include: { user: { include: { profile: true } } },
+          orderBy: { joinedAt: 'asc' },
+        },
+      },
     });
     res.json({ challenges });
   } catch (err) {
@@ -134,7 +140,12 @@ router.post('/', authenticate, validate(createChallengeSchema), async (req: Requ
         },
       });
 
-      return challenge;
+      const participant = await tx.challengeParticipant.findFirst({
+        where: { challengeId: challenge.id, userId },
+        include: { user: { include: { profile: true } } },
+      });
+
+      return { ...challenge, participants: participant ? [participant] : [] };
     });
 
     res.status(201).json({ challenge: result });

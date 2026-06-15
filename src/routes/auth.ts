@@ -66,7 +66,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { profile: true },
+      include: { profile: true, settings: true, wallet: true },
     });
     if (!user || !user.passwordHash) {
       return res.status(401).json({ error: 'Invalid email or password' });

@@ -84,9 +84,9 @@ router.post('/friend-respond', authenticate, validate(respondFriendRequestSchema
     });
     if (!friendship) return res.status(404).json({ error: 'Request not found' });
 
-    const updated = await prisma.friendship.update({
+const updated = await prisma.friendship.update({
       where: { id: friendshipId },
-      data: { status: action === 'accept' ? 'accepted' : 'blocked' },
+      data: { status: action === 'accept' ? 'accepted' : 'rejected' },
     });
     res.json({ friendship: updated });
   } catch (err) {
@@ -208,8 +208,29 @@ router.post('/chat/:messageId/reactions', authenticate, async (req: Request, res
   }
 });
 
-// DELETE /api/social/chat/:messageId/reactions
+// DELETE /api/social/chat/:messageId/reactions (legacy)
 router.delete('/chat/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji) {
+      return res.status(400).json({ error: 'Emoji required' });
+    }
+    await prisma.messageReaction.deleteMany({
+      where: {
+        messageId: req.params.messageId as string,
+        userId: req.user!.userId,
+        emoji,
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Reaction remove error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/social/chat/:messageId/reactions/remove (preferred)
+router.post('/chat/:messageId/reactions/remove', authenticate, async (req: Request, res: Response) => {
   try {
     const { emoji } = req.body;
     if (!emoji) {

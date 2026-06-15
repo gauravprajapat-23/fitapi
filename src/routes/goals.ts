@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createGoalSchema, completeTaskSchema, shieldDaySchema, updateGoalSchema } from '../validators';
+import { createGoalSchema, completeTaskSchema, shieldDaySchema, updateGoalSchema, forfeitGoalSchema, createActivitySessionSchema } from '../validators';
 
 const router = Router();
 
@@ -28,6 +28,81 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     res.json({ goals: goalsWithCount });
   } catch (err) {
     console.error('Goals list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/goals/activity-sessions (MUST be before /:id to avoid route collision)
+router.get('/activity-sessions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const goalId = req.query.goalId as string | undefined;
+
+    const where: Record<string, unknown> = { userId };
+    if (goalId) where.goalId = goalId;
+
+    const sessions = await prisma.activitySession.findMany({
+      where,
+      orderBy: { startedAt: 'desc' },
+      take: 50,
+      include: {
+        routePoints: { orderBy: { pointIndex: 'asc' } },
+      },
+    });
+
+    res.json({ sessions });
+  } catch (err) {
+    console.error('Activity sessions list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/goals/activity-sessions (MUST be before /:id to avoid route collision)
+router.post('/activity-sessions', authenticate, validate(createActivitySessionSchema), async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { goalId, activityType, startedAt, endedAt, durationSeconds, distanceMeters, steps, caloriesBurned, avgPaceSecsPerKm, gpsAccuracyMeters, routePoints } = req.body;
+
+    const session = await prisma.$transaction(async (tx) => {
+      const s = await tx.activitySession.create({
+        data: {
+          userId,
+          goalId,
+          source: 'gps_app',
+          activityType,
+          startedAt: new Date(startedAt),
+          endedAt: new Date(endedAt),
+          durationSeconds,
+          distanceMeters,
+          steps,
+          caloriesBurned,
+          avgPaceSecsPerKm,
+          gpsAccuracyMeters,
+          verificationStatus: 'pending',
+        },
+      });
+
+      if (routePoints?.length) {
+        await tx.routePoint.createMany({
+          data: routePoints.map((p: { latitude: number; longitude: number; altitudeMeters?: number; speedMps?: number; accuracyMeters?: number; recordedAt: string }, i: number) => ({
+            sessionId: s.id,
+            pointIndex: i,
+            latitude: p.latitude,
+            longitude: p.longitude,
+            altitudeMeters: p.altitudeMeters,
+            speedMps: p.speedMps,
+            accuracyMeters: p.accuracyMeters,
+            recordedAt: new Date(p.recordedAt),
+          })),
+        });
+      }
+
+      return s;
+    });
+
+    res.status(201).json({ session });
+  } catch (err) {
+    console.error('Activity session create error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -356,7 +431,7 @@ router.post('/shield', authenticate, validate(shieldDaySchema), async (req: Requ
 });
 
 // POST /api/goals/forfeit
-router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
+router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
     const { goalId } = req.body;
@@ -429,82 +504,6 @@ router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-// Activity sessions
-// POST /api/goals/activity-sessions
-router.post('/activity-sessions', authenticate, async (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.userId;
-    const { goalId, activityType, startedAt, endedAt, durationSeconds, distanceMeters, steps, caloriesBurned, avgPaceSecsPerKm, gpsAccuracyMeters, routePoints } = req.body;
-
-    const session = await prisma.$transaction(async (tx) => {
-      const s = await tx.activitySession.create({
-        data: {
-          userId,
-          goalId,
-          source: 'gps_app',
-          activityType,
-          startedAt: new Date(startedAt),
-          endedAt: new Date(endedAt),
-          durationSeconds,
-          distanceMeters,
-          steps,
-          caloriesBurned,
-          avgPaceSecsPerKm,
-          gpsAccuracyMeters,
-          verificationStatus: 'pending',
-        },
-      });
-
-      if (routePoints?.length) {
-        await tx.routePoint.createMany({
-          data: routePoints.map((p: { latitude: number; longitude: number; altitudeMeters?: number; speedMps?: number; accuracyMeters?: number; recordedAt: string }, i: number) => ({
-            sessionId: s.id,
-            pointIndex: i,
-            latitude: p.latitude,
-            longitude: p.longitude,
-            altitudeMeters: p.altitudeMeters,
-            speedMps: p.speedMps,
-            accuracyMeters: p.accuracyMeters,
-            recordedAt: new Date(p.recordedAt),
-          })),
-        });
-      }
-
-      return s;
-    });
-
-    res.status(201).json({ session });
-  } catch (err) {
-    console.error('Activity session create error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// GET /api/goals/activity-sessions
-router.get('/activity-sessions', authenticate, async (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.userId;
-    const goalId = req.query.goalId as string | undefined;
-
-    const where: Record<string, unknown> = { userId };
-    if (goalId) where.goalId = goalId;
-
-    const sessions = await prisma.activitySession.findMany({
-      where,
-      orderBy: { startedAt: 'desc' },
-      take: 50,
-      include: {
-        routePoints: { orderBy: { pointIndex: 'asc' } },
-      },
-    });
-
-    res.json({ sessions });
-  } catch (err) {
-    console.error('Activity sessions list error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // POST /api/goals/expire-expired (cron endpoint)
 router.post('/expire-expired', async (req: Request, res: Response) => {
   try {
@@ -541,7 +540,7 @@ router.post('/expire-expired', async (req: Request, res: Response) => {
                 data: {
                   userId: goal.userId,
                   walletId: wallet.id,
-                  type: 'refund',
+                  type: 'deposit',
                   direction: 'credit',
                   amount: refundAmount,
                   balanceBefore: wallet.availableBalance,

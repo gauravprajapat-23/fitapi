@@ -156,6 +156,31 @@ export const updateGoalSchema = z.object({
   restDayOfWeek: z.array(z.number().int().min(1).max(7)).optional(),
 });
 
+export const forfeitGoalSchema = z.object({
+  goalId: z.string().uuid(),
+});
+
+export const createActivitySessionSchema = z.object({
+  goalId: z.string().uuid().optional(),
+  activityType: z.enum(['running', 'walking', 'cycling', 'yoga', 'strength', 'swimming', 'meditation', 'hiit', 'custom']),
+  startedAt: z.string(),
+  endedAt: z.string(),
+  durationSeconds: z.number().int().positive(),
+  distanceMeters: z.number().positive().optional(),
+  steps: z.number().int().positive().optional(),
+  caloriesBurned: z.number().positive().optional(),
+  avgPaceSecsPerKm: z.number().positive().optional(),
+  gpsAccuracyMeters: z.number().positive().optional(),
+  routePoints: z.array(z.object({
+    latitude: z.number(),
+    longitude: z.number(),
+    altitudeMeters: z.number().optional(),
+    speedMps: z.number().optional(),
+    accuracyMeters: z.number().optional(),
+    recordedAt: z.string(),
+  })).optional(),
+});
+
 // -- Subscription / Shield Plan --
 
 export const createSubscriptionSchema = z.object({

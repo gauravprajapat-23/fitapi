@@ -226,6 +226,7 @@ enum FitCoinTxType {
 enum FriendshipStatus {
   pending
   accepted
+  rejected
   blocked
 }
 
