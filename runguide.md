@@ -13,3 +13,6 @@ npx prisma migrate dev --name init
 
 # 5. Start the API
 npm run dev
+
+# update db 
+npx prisma db push
