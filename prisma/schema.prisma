@@ -57,6 +57,7 @@ enum ActivityType {
   strength
   swimming
   meditation
+  hiit
   custom
 }
 
@@ -147,6 +148,7 @@ enum TransactionType {
   unstake
   earnback
   forfeit
+  refund
   challenge_prize
   streak_bonus
   referral_bonus

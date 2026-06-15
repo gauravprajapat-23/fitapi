@@ -13,16 +13,19 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       where: { userId: req.user!.userId, deletedAt: null, status: { not: 'expired' } },
       orderBy: { createdAt: 'desc' },
       include: {
-        dailyLogs: { take: 30, orderBy: { taskDate: 'desc' } },
+        dailyLogs: { orderBy: { taskDate: 'desc' } },
         streak: true,
       },
     });
-    res.json({
-      goals: goals.map(g => ({
-        ...g,
-        completedDays: g.dailyLogs.filter(l => l.status === 'completed').length,
-      })),
-    });
+
+    const goalsWithCount = await Promise.all(goals.map(async (g) => {
+      const completedDays = await prisma.dailyTaskLog.count({
+        where: { goalId: g.id, status: 'completed' },
+      });
+      return { ...g, completedDays };
+    }));
+
+    res.json({ goals: goalsWithCount });
   } catch (err) {
     console.error('Goals list error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -40,10 +43,15 @@ router.get('/:id', authenticate, async (req: Request, res: Response) => {
       },
     });
     if (!goal) return res.status(404).json({ error: 'Goal not found' });
+
+    const completedDays = await prisma.dailyTaskLog.count({
+      where: { goalId: goal.id, status: 'completed' },
+    });
+
     res.json({
       goal: {
         ...goal,
-        completedDays: goal.dailyLogs.filter(l => l.status === 'completed').length,
+        completedDays,
       },
     });
   } catch (err) {
@@ -186,15 +194,15 @@ if (existing?.status === 'completed') {
       return res.status(400).json({ error: 'Task already completed today' });
     }
 
-    const logCount = await prisma.dailyTaskLog.count({
-      where: { goalId, status: 'completed' },
-    });
-
     const session = activitySessionId
       ? await prisma.activitySession.findUnique({ where: { id: activitySessionId } })
       : null;
 
     const result = await prisma.$transaction(async (tx) => {
+      const logCount = await tx.dailyTaskLog.count({
+        where: { goalId, status: 'completed' },
+      });
+
       const log = await tx.dailyTaskLog.create({
         data: {
           goalId,
@@ -279,19 +287,65 @@ router.post('/shield', authenticate, validate(shieldDaySchema), async (req: Requ
     const userId = req.user!.userId;
     const { goalId, date } = req.body;
 
+    const goal = await prisma.goal.findFirst({ where: { id: goalId, userId } });
+    if (!goal) return res.status(404).json({ error: 'Goal not found' });
+
     const streak = await prisma.streak.findUnique({ where: { userId_goalId: { userId, goalId } } });
     if (!streak || streak.shieldRestoresUsed >= streak.shieldRestoresLimit) {
       return res.status(400).json({ error: 'No shield restores available' });
     }
 
+    const existing = await prisma.dailyTaskLog.findFirst({
+      where: { goalId, taskDate: new Date(date) },
+    });
+    if (existing) {
+      return res.status(400).json({ error: 'A log already exists for this date' });
+    }
+
     await prisma.$transaction(async (tx) => {
       await tx.dailyTaskLog.create({
-        data: { goalId, userId, taskDate: new Date(date), status: 'shielded' },
+        data: { goalId, userId, taskDate: new Date(date), status: 'shielded', earnedAmount: goal.dailyEarnback },
       });
       await tx.streak.update({
         where: { id: streak.id },
         data: { shieldRestoresUsed: { increment: 1 } },
       });
+
+      const dailyEarnback = Number(goal.dailyEarnback);
+
+      await tx.goal.update({
+        where: { id: goalId },
+        data: { totalEarned: { increment: dailyEarnback } },
+      });
+
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (wallet) {
+        await tx.wallet.update({
+          where: { userId },
+          data: {
+            availableBalance: { increment: dailyEarnback },
+            escrowBalance: { decrement: dailyEarnback },
+            totalEarnedAllTime: { increment: dailyEarnback },
+            version: { increment: 1 },
+          },
+        });
+        await tx.transaction.create({
+          data: {
+            userId,
+            walletId: wallet.id,
+            type: 'earnback',
+            direction: 'credit',
+            amount: dailyEarnback,
+            balanceBefore: wallet.availableBalance,
+            balanceAfter: Number(wallet.availableBalance) + dailyEarnback,
+            status: 'completed',
+            referenceId: goalId,
+            referenceType: 'goal',
+            description: `Earnback for shielded day on ${goal.title}`,
+            processedAt: new Date(),
+          },
+        });
+      }
     });
 
     res.status(201).json({ log: { goalId, date, status: 'shielded' } });
@@ -309,8 +363,16 @@ router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
 
     const goal = await prisma.goal.findFirst({ where: { id: goalId, userId } });
     if (!goal) return res.status(404).json({ error: 'Goal not found' });
+    if (goal.status !== 'active') return res.status(400).json({ error: 'Goal is not active' });
 
     const today = new Date().toISOString().split('T')[0];
+
+    const existing = await prisma.dailyTaskLog.findFirst({
+      where: { goalId, taskDate: new Date(today) },
+    });
+    if (existing) {
+      return res.status(400).json({ error: 'A log already exists for today' });
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.dailyTaskLog.create({
@@ -321,11 +383,13 @@ router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
         where: { id: goalId },
         data: {
           totalForfeited: { increment: goal.dailyEarnback },
+          status: 'abandoned',
         },
       });
 
       const wallet = await tx.wallet.findUnique({ where: { userId } });
       if (wallet) {
+        const newEscrowBalance = Number(wallet.escrowBalance) - Number(goal.dailyEarnback);
         await tx.wallet.update({
           where: { userId },
           data: {
@@ -341,8 +405,8 @@ router.post('/forfeit', authenticate, async (req: Request, res: Response) => {
             type: 'forfeit',
             direction: 'debit',
             amount: goal.dailyEarnback,
-            balanceBefore: wallet.availableBalance,
-            balanceAfter: wallet.availableBalance,
+            balanceBefore: Number(wallet.escrowBalance),
+            balanceAfter: newEscrowBalance,
             status: 'completed',
             referenceId: goalId,
             referenceType: 'goal',
@@ -429,11 +493,78 @@ router.get('/activity-sessions', authenticate, async (req: Request, res: Respons
       where,
       orderBy: { startedAt: 'desc' },
       take: 50,
+      include: {
+        routePoints: { orderBy: { pointIndex: 'asc' } },
+      },
     });
 
     res.json({ sessions });
   } catch (err) {
     console.error('Activity sessions list error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/goals/expire-expired (cron endpoint)
+router.post('/expire-expired', async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const expiredGoals = await prisma.goal.findMany({
+      where: {
+        status: 'active',
+        endDate: { lt: now },
+      },
+    });
+
+    let count = 0;
+    for (const goal of expiredGoals) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.goal.update({
+            where: { id: goal.id },
+            data: { status: 'expired' },
+          });
+
+          const wallet = await tx.wallet.findUnique({ where: { userId: goal.userId } });
+          if (wallet) {
+            const refundAmount = Number(goal.stakeAmount) - Number(goal.totalEarned);
+            if (refundAmount > 0) {
+              await tx.wallet.update({
+                where: { userId: goal.userId },
+                data: {
+                  availableBalance: { increment: refundAmount },
+                  escrowBalance: { decrement: refundAmount },
+                  version: { increment: 1 },
+                },
+              });
+              await tx.transaction.create({
+                data: {
+                  userId: goal.userId,
+                  walletId: wallet.id,
+                  type: 'refund',
+                  direction: 'credit',
+                  amount: refundAmount,
+                  balanceBefore: wallet.availableBalance,
+                  balanceAfter: Number(wallet.availableBalance) + refundAmount,
+                  status: 'completed',
+                  referenceId: goal.id,
+                  referenceType: 'goal',
+                  description: `Refund for expired goal: ${goal.title}`,
+                  processedAt: new Date(),
+                },
+              });
+            }
+          }
+        });
+        count++;
+      } catch (err) {
+        console.error(`Failed to expire goal ${goal.id}:`, err);
+      }
+    }
+
+    res.json({ expired: count });
+  } catch (err) {
+    console.error('Goal expiry error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

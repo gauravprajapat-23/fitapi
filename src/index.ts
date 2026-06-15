@@ -6,20 +6,12 @@ import { PrismaClient } from '@prisma/client';
 export const prisma = new PrismaClient();
 
 // Allow JSON serialization of BigInt (Prisma returns BigInt for @db.BigInt fields)
-// 1. Extend the global BigInt interface so TypeScript recognizes the property
-declare global {
-  interface BigInt {
-    toJSON(): string;
-  }
-}
-
-// 2. Implement the toJSON method
-BigInt.prototype.toJSON = function () {
+(BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
 
 const app = express();
-const PORT = process.env.PORT ?? 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(helmet());
 app.use(cors());

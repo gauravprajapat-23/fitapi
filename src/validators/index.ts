@@ -44,7 +44,7 @@ export const updateProfileSchema = z.object({
 // ── Goals ──
 
 export const createGoalSchema = z.object({
-  activityType: z.enum(['running', 'walking', 'cycling', 'yoga', 'strength', 'swimming', 'meditation', 'custom']),
+  activityType: z.enum(['running', 'walking', 'cycling', 'yoga', 'strength', 'swimming', 'meditation', 'hiit', 'custom']),
   title: z.string().min(1).max(120),
   taskDescription: z.string().min(1),
   targetValue: z.number().positive(),
@@ -95,7 +95,7 @@ export const addBankAccountSchema = z.object({
 export const createChallengeSchema = z.object({
   title: z.string().min(1).max(120),
   description: z.string().optional(),
-  activityType: z.enum(['running', 'walking', 'cycling', 'yoga', 'strength', 'swimming', 'meditation', 'custom']),
+  activityType: z.enum(['running', 'walking', 'cycling', 'yoga', 'strength', 'swimming', 'meditation', 'hiit', 'custom']),
   challengeType: z.enum(['public', 'private', 'corporate', 'charity', 'coach_led']).default('public'),
   prizeModel: z.enum(['proportional', 'winner_takes_most', 'all_or_nothing']).default('proportional'),
   dailyTaskDesc: z.string().min(1),

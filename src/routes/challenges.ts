@@ -112,7 +112,25 @@ router.post('/', authenticate, validate(createChallengeSchema), async (req: Requ
         data: {
           availableBalance: { decrement: data.entryStake },
           escrowBalance: { increment: data.entryStake },
+          totalStakedAllTime: { increment: data.entryStake },
           version: { increment: 1 },
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          walletId: wallet.id,
+          type: 'stake',
+          direction: 'debit',
+          amount: data.entryStake,
+          balanceBefore: Number(wallet.availableBalance),
+          balanceAfter: Number(wallet.availableBalance) - data.entryStake,
+          status: 'completed',
+          referenceId: challenge.id,
+          referenceType: 'challenge',
+          description: `Staked for challenge: ${data.title}`,
+          processedAt: new Date(),
         },
       });
 
@@ -137,10 +155,6 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
       return res.status(400).json({ error: 'Challenge not available for joining' });
     }
 
-    if (challenge.currentParticipants >= challenge.maxParticipants) {
-      return res.status(400).json({ error: 'Challenge is full' });
-    }
-
     const existing = await prisma.challengeParticipant.findUnique({
       where: { challengeId_userId: { challengeId, userId } },
     });
@@ -151,18 +165,25 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
       return res.status(400).json({ error: 'Insufficient balance' });
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.challengeParticipant.create({
-        data: { challengeId, userId, stakePaid: challenge.entryStake, status: 'active' },
-      });
-
-      await tx.challenge.update({
-        where: { id: challengeId },
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.challenge.updateMany({
+        where: { id: challengeId, currentParticipants: { lt: challenge.maxParticipants } },
         data: {
           currentParticipants: { increment: 1 },
           prizePool: { increment: challenge.entryStake },
-          ...(challenge.currentParticipants + 1 >= challenge.maxParticipants ? { status: 'full' } : {}),
         },
+      });
+      if (updated.count === 0) {
+        throw new Error('CHALLENGE_FULL');
+      }
+
+      const freshChallenge = await tx.challenge.findUnique({ where: { id: challengeId } });
+      if (freshChallenge && freshChallenge.currentParticipants >= freshChallenge.maxParticipants) {
+        await tx.challenge.update({ where: { id: challengeId }, data: { status: 'full' } });
+      }
+
+      await tx.challengeParticipant.create({
+        data: { challengeId, userId, stakePaid: challenge.entryStake, status: 'active' },
       });
 
       await tx.wallet.update({
@@ -170,13 +191,34 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
         data: {
           availableBalance: { decrement: challenge.entryStake },
           escrowBalance: { increment: challenge.entryStake },
+          totalStakedAllTime: { increment: challenge.entryStake },
           version: { increment: 1 },
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          walletId: wallet.id,
+          type: 'stake',
+          direction: 'debit',
+          amount: challenge.entryStake,
+          balanceBefore: Number(wallet.availableBalance),
+          balanceAfter: Number(wallet.availableBalance) - Number(challenge.entryStake),
+          status: 'completed',
+          referenceId: challengeId,
+          referenceType: 'challenge',
+          description: `Staked for challenge: ${challenge.title}`,
+          processedAt: new Date(),
         },
       });
     });
 
     res.status(200).json({ message: 'Joined challenge' });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.message === 'CHALLENGE_FULL') {
+      return res.status(400).json({ error: 'Challenge is full' });
+    }
     console.error('Join challenge error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
