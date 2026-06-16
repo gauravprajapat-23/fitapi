@@ -235,6 +235,133 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
   }
 });
 
+// POST /api/challenges/:id/complete — mark a participant's session as done, update progress
+router.post('/:id/complete', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const challengeId = req.params.id as string;
+    const { tasksCompleted, completionPct } = req.body as { tasksCompleted?: number; completionPct?: number };
+
+    const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
+
+    const participant = await prisma.challengeParticipant.findUnique({
+      where: { challengeId_userId: { challengeId, userId } },
+    });
+    if (!participant) return res.status(404).json({ error: 'Not a participant' });
+
+    const newTasksCompleted = tasksCompleted ?? participant.tasksCompleted + 1;
+    const newCompletionPct = completionPct ?? Math.min(100, Math.round((newTasksCompleted / challenge.durationDays) * 100));
+
+    const updated = await prisma.challengeParticipant.update({
+      where: { id: participant.id },
+      data: {
+        tasksCompleted: newTasksCompleted,
+        completionPct: newCompletionPct,
+        status: newCompletionPct >= 100 ? 'completed' : 'active',
+      },
+    });
+
+    res.json({ participant: updated });
+  } catch (err) {
+    console.error('Challenge complete error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/challenges/auto-complete — cron: mark ended challenges as completed
+router.post('/auto-complete', authenticate, async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const endedChallenges = await prisma.challenge.findMany({
+      where: {
+        status: { in: ['active', 'full'] },
+        challengeEnd: { lt: now },
+        deletedAt: null,
+      },
+    });
+
+    let completed = 0;
+    for (const ch of endedChallenges) {
+      await prisma.$transaction(async (tx) => {
+        const participants = await tx.challengeParticipant.findMany({
+          where: { challengeId: ch.id },
+          orderBy: { completionPct: 'desc' },
+        });
+
+        const ranked = participants.map((p, i) => ({
+          id: p.id,
+          finalRank: i + 1,
+          status: p.completionPct.gte(100) ? ('completed' as const) : ('active' as const),
+        }));
+
+        for (const r of ranked) {
+          await tx.challengeParticipant.update({
+            where: { id: r.id },
+            data: { finalRank: r.finalRank, status: r.status },
+          });
+        }
+
+        const netPool = Number(ch.prizePool) * (1 - Number(ch.platformFeePct));
+
+        if (ch.prizeModel === 'proportional' && participants.length > 0) {
+          const totalPct = participants.reduce((sum, p) => sum + Number(p.completionPct), 0);
+          for (const p of participants) {
+            const share = totalPct > 0 ? (Number(p.completionPct) / totalPct) * netPool : netPool / participants.length;
+            const rounded = Math.round(share * 100) / 100;
+            if (rounded > 0) {
+              await tx.challengeParticipant.update({
+                where: { id: p.id },
+                data: { actualEarnings: rounded },
+              });
+
+              const wallet = await tx.wallet.findUnique({ where: { userId: p.userId } });
+              if (wallet) {
+                await tx.wallet.update({
+                  where: { userId: p.userId },
+                  data: {
+                    escrowBalance: { decrement: Number(p.stakePaid) },
+                    availableBalance: { increment: rounded },
+                    totalEarnedAllTime: { increment: rounded },
+                    version: { increment: 1 },
+                  },
+                });
+                await tx.transaction.create({
+                  data: {
+                    userId: p.userId,
+                    walletId: wallet.id,
+                    type: 'challenge_prize',
+                    direction: 'credit',
+                    amount: rounded,
+                    balanceBefore: Number(wallet.availableBalance),
+                    balanceAfter: Number(wallet.availableBalance) + rounded,
+                    status: 'completed',
+                    referenceId: ch.id,
+                    referenceType: 'challenge',
+                    description: `Prize for challenge: ${ch.title}`,
+                    processedAt: new Date(),
+                  },
+                });
+              }
+            }
+          }
+        }
+
+        await tx.challenge.update({
+          where: { id: ch.id },
+          data: { status: 'completed', completedAt: now, prizeDistributed: true },
+        });
+      });
+      completed++;
+    }
+
+    res.json({ completed, total: endedChallenges.length });
+  } catch (err) {
+    console.error('Auto-complete error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/challenges/leaderboard/:id
 router.get('/leaderboard/:id', authenticate, async (req: Request, res: Response) => {
   try {

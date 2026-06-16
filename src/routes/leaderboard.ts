@@ -7,9 +7,10 @@ import { validate } from '../middleware/validate';
 const router = Router();
 
 const leaderboardQuerySchema = z.object({
-  scope: z.enum(['global', 'friends', 'city']).default('global'),
+  scope: z.enum(['global', 'friends', 'city', 'challenge']).default('global'),
   metric: z.enum(['streak', 'earned', 'completion_rate', 'challenges_won']).default('streak'),
   period: z.enum(['this_week', 'this_month', 'all_time']).default('all_time'),
+  challengeId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -69,6 +70,31 @@ router.get('/', authenticate, validate(leaderboardQuerySchema, 'query'), async (
 
     // Compute leaderboard based on metric
     let entries: Array<{ userId: string; username: string; displayName: string; avatarUrl: string | null; value: number; city: string | null }>;
+
+    if (scope === 'challenge') {
+      const challengeId = req.query.challengeId as string | undefined;
+      if (!challengeId) {
+        return res.status(400).json({ error: 'challengeId required for challenge scope' });
+      }
+      const participants = await prisma.challengeParticipant.findMany({
+        where: { challengeId },
+        orderBy: { completionPct: 'desc' },
+        include: { user: { include: { profile: true } } },
+      });
+      const entries: Array<{ userId: string; username: string; displayName: string; avatarUrl: string | null; value: number; city: string | null }> =
+        participants.map((p, i) => ({
+          userId: p.userId,
+          username: p.user.profile?.username ?? 'unknown',
+          displayName: p.user.profile?.displayName ?? 'Unknown',
+          avatarUrl: p.user.profile?.avatarUrl ?? null,
+          value: Number(p.completionPct),
+          city: p.user.profile?.city ?? null,
+        }));
+      const total = entries.length;
+      const paginated = entries.slice(offset, offset + limit);
+      const ranked = paginated.map((e, i) => ({ rank: offset + i + 1, ...e }));
+      return res.json({ leaderboard: ranked, total, offset, limit });
+    }
 
     switch (metric) {
       case 'streak': {

@@ -368,6 +368,8 @@ model User {
   banReason     String?       @db.Text
   lastLoginAt   DateTime?     @db.Timestamptz
   lastLoginIp   String?       @db.Inet
+  refreshToken  String?       @db.VarChar(512)
+  refreshTokenExpires DateTime?  @db.Timestamptz
   createdAt     DateTime      @default(now()) @db.Timestamptz
   updatedAt     DateTime      @updatedAt @db.Timestamptz
   deletedAt     DateTime?     @db.Timestamptz
@@ -643,6 +645,8 @@ model Challenge {
   status              ChallengeStatus @default(draft)
   corporateName       String?         @db.VarChar(120)
   charityName         String?         @db.VarChar(120)
+  completedAt         DateTime?       @db.Timestamptz
+  prizeDistributed    Boolean         @default(false)
   createdAt           DateTime        @default(now()) @db.Timestamptz
   updatedAt           DateTime        @updatedAt @db.Timestamptz
   deletedAt           DateTime?       @db.Timestamptz

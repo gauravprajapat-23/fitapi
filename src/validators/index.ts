@@ -5,9 +5,9 @@ import { z } from 'zod';
 export const registerSchema = z.object({
   ref: z.string().max(12).optional(),
   email: z.string().email().max(320),
-  phone: z.string().regex(/^\+91\d{10}$/, 'Must be +91 followed by 10 digits').optional(),
+  phone: z.string().regex(/^(\+91)?\d{10}$/, 'Must be 10 digits (optionally prefixed with +91)'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_]+$/),
+  username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9._-]+$/, 'Username can only contain letters, numbers, dots, hyphens, and underscores'),
   displayName: z.string().min(1).max(80),
 });
 
@@ -26,18 +26,21 @@ export const otpVerifySchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_]+$/).optional(),
+  username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9._-]+$/).optional(),
   displayName: z.string().min(1).max(80).optional(),
+  name: z.string().min(1).max(80).optional(),
   bio: z.string().max(300).optional(),
   avatarUrl: z.string().url().optional(),
   city: z.string().max(100).optional(),
+  location: z.string().max(100).optional(),
   countryCode: z.string().length(2).optional(),
   dateOfBirth: z.string().optional(),
-  gender: z.enum(['male', 'female', 'non_binary', 'prefer_not_to_say']).optional(),
+  gender: z.enum(['male', 'female', 'other', 'prefer_not_to_say']).optional(),
   fitnessLevel: z.enum(['beginner', 'intermediate', 'active', 'athlete']).optional(),
   preferredActivities: z.array(z.string()).optional(),
   dailyAvailableMinutes: z.number().int().min(15).max(120).optional(),
-  preferredWorkoutTime: z.enum(['morning', 'evening', 'flexible']).optional(),
+  timeCommitment: z.number().int().min(15).max(120).optional(),
+  preferredWorkoutTime: z.enum(['morning', 'afternoon', 'evening', 'night', 'flexible']).optional(),
   profileVisibility: z.enum(['public', 'friends', 'private']).optional(),
 });
 
