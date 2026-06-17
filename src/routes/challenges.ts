@@ -3,6 +3,8 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { createChallengeSchema, joinChallengeSchema } from '../validators';
+import { validateChallengeCompletion } from '../lib/antiSpoof';
+import { challengeCompleteRateLimit, requireCronSecret } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -236,11 +238,11 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
 });
 
 // POST /api/challenges/:id/complete — mark a participant's session as done, update progress
-router.post('/:id/complete', authenticate, async (req: Request, res: Response) => {
+router.post('/:id/complete', authenticate, challengeCompleteRateLimit, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
     const challengeId = req.params.id as string;
-    const { tasksCompleted, completionPct } = req.body as { tasksCompleted?: number; completionPct?: number };
+    const { activitySessionId } = req.body as { activitySessionId?: string };
 
     const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
     if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
@@ -250,8 +252,80 @@ router.post('/:id/complete', authenticate, async (req: Request, res: Response) =
     });
     if (!participant) return res.status(404).json({ error: 'Not a participant' });
 
-    const newTasksCompleted = tasksCompleted ?? participant.tasksCompleted + 1;
-    const newCompletionPct = completionPct ?? Math.min(100, Math.round((newTasksCompleted / challenge.durationDays) * 100));
+    if (!activitySessionId) {
+      return res.status(400).json({ error: 'activitySessionId is required' });
+    }
+
+    const session = await prisma.activitySession.findUnique({ where: { id: activitySessionId } });
+    if (!session) return res.status(400).json({ error: 'Activity session not found' });
+    if (session.userId !== userId) return res.status(403).json({ error: 'Session does not belong to you' });
+    if (session.verificationStatus === 'failed') return res.status(400).json({ error: 'Session failed verification' });
+    if (session.activityType !== challenge.activityType) {
+      return res.status(400).json({ error: `Session type (${session.activityType}) does not match challenge (${challenge.activityType})` });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const sessionDate = new Date(session.endedAt).toISOString().split('T')[0];
+    if (sessionDate !== today) {
+      return res.status(400).json({ error: 'Activity session must be from today' });
+    }
+
+    const sessionAlreadyUsed = await prisma.challengeParticipant.findFirst({
+      where: { challengeId, status: 'active' },
+      include: { challenge: true },
+    });
+    if (sessionAlreadyUsed) {
+      const usedSession = await prisma.dailyTaskLog.findFirst({
+        where: { userId, activitySessionId, status: 'completed' },
+      });
+      if (usedSession) {
+        return res.status(400).json({ error: 'This session has already been used' });
+      }
+    }
+
+    const chStartDate = new Date(challenge.challengeStart).getTime();
+    const chEndDate = new Date(challenge.challengeEnd);
+    chEndDate.setHours(23, 59, 59, 999);
+    const sessEnd = new Date(session.endedAt).getTime();
+    if (sessEnd < chStartDate || sessEnd > chEndDate.getTime()) {
+      return res.status(400).json({ error: 'Session date is outside challenge period' });
+    }
+
+    const todayLog = await prisma.dailyTaskLog.findFirst({
+      where: { userId, taskDate: new Date(new Date().toISOString().split('T')[0]), status: 'completed' },
+    });
+    if (!todayLog) {
+      return res.status(400).json({ error: 'Complete a daily task first' });
+    }
+
+    const todayAlreadyCompleted = await prisma.challengeParticipant.findFirst({
+      where: {
+        challengeId,
+        userId,
+        tasksCompleted: { gte: participant.tasksCompleted + 1 },
+      },
+    });
+    if (todayAlreadyCompleted) {
+      return res.status(400).json({ error: 'Already completed today' });
+    }
+
+    const newTasksCompleted = participant.tasksCompleted + 1;
+    const newCompletionPct = Math.min(100, Math.round((newTasksCompleted / challenge.durationDays) * 100));
+
+    const validation = validateChallengeCompletion({
+      tasksCompleted: newTasksCompleted,
+      completionPct: newCompletionPct,
+      durationDays: challenge.durationDays,
+      existingTasksCompleted: participant.tasksCompleted,
+    });
+
+    if (!validation.passed) {
+      return res.status(400).json({
+        error: 'Challenge completion failed validation',
+        flags: validation.flags,
+        score: validation.score,
+      });
+    }
 
     const updated = await prisma.challengeParticipant.update({
       where: { id: participant.id },
@@ -270,7 +344,7 @@ router.post('/:id/complete', authenticate, async (req: Request, res: Response) =
 });
 
 // POST /api/challenges/auto-complete — cron: mark ended challenges as completed
-router.post('/auto-complete', authenticate, async (req: Request, res: Response) => {
+router.post('/auto-complete', authenticate, requireCronSecret, async (req: Request, res: Response) => {
   try {
     const now = new Date();
     const endedChallenges = await prisma.challenge.findMany({

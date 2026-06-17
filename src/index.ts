@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { PrismaClient } from '@prisma/client';
+import { requestLogger } from './middleware/requestLogger';
 
 export const prisma = new PrismaClient();
 
@@ -16,6 +17,7 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(requestLogger);
 
 // Health check
 app.get('/api/health', (_req, res) => {

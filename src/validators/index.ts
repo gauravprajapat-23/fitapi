@@ -12,7 +12,7 @@ export const registerSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().min(1, 'Email or phone is required'),
   password: z.string().min(1),
 });
 
@@ -30,7 +30,8 @@ export const updateProfileSchema = z.object({
   displayName: z.string().min(1).max(80).optional(),
   name: z.string().min(1).max(80).optional(),
   bio: z.string().max(300).optional(),
-  avatarUrl: z.string().url().optional(),
+  avatar: z.string().max(1000000).optional(),
+  avatarUrl: z.string().max(1000000).optional(),
   city: z.string().max(100).optional(),
   location: z.string().max(100).optional(),
   countryCode: z.string().length(2).optional(),
@@ -63,7 +64,7 @@ export const createGoalSchema = z.object({
 
 export const completeTaskSchema = z.object({
   goalId: z.string().uuid(),
-  activitySessionId: z.string().uuid().optional(),
+  activitySessionId: z.string().uuid(),
 });
 
 export const shieldDaySchema = z.object({
@@ -182,6 +183,8 @@ export const createActivitySessionSchema = z.object({
     accuracyMeters: z.number().optional(),
     recordedAt: z.string(),
   })).optional(),
+  photoUrl: z.string().url().optional(),
+  photoExifData: z.record(z.unknown()).optional(),
 });
 
 // -- Subscription / Shield Plan --

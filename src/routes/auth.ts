@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate';
 import { registerSchema, loginSchema, otpSendSchema, otpVerifySchema, updateProfileSchema, submitKycSchema } from '../validators';
 
 const router = Router();
+const devLog = process.env.NODE_ENV !== 'production' ? console.log : (..._args: unknown[]) => {};
 
 // Helper to normalize Indian phone to +91XXXXXXXXXX
 function normalizePhone(phone: string): string {
@@ -21,6 +22,8 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
   try {
     const { email, phone, password, username, displayName } = req.body;
 
+    devLog(`[AUTH] Register attempt: email=${email}, phone=${phone}, username=${username}, displayName=${displayName}`);
+
     const normalizedPhone = phone ? normalizePhone(phone) : null;
 
     // Check for existing user by email or normalized phone
@@ -33,8 +36,15 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
       },
     });
     if (existing) {
-      if (existing.email === email) return res.status(409).json({ error: 'Email already registered' });
-      if (existing.phone === normalizedPhone) return res.status(409).json({ error: 'Phone number already registered' });
+      if (existing.email === email) {
+        devLog(`[AUTH] Register failed: email already registered`);
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+      if (existing.phone === normalizedPhone) {
+        devLog(`[AUTH] Register failed: phone already registered`);
+        return res.status(409).json({ error: 'Phone number already registered' });
+      }
+      devLog(`[AUTH] Register failed: email or phone already registered`);
       return res.status(409).json({ error: 'Email or phone already registered' });
     }
 
@@ -43,6 +53,7 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
       where: { username },
     });
     if (existingUsername) {
+      devLog(`[AUTH] Register failed: username "${username}" already taken`);
       return res.status(409).json({ error: 'Username already taken' });
     }
 
@@ -99,6 +110,7 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
     }
 
     res.status(201).json({ token: accessToken, refreshToken, user, mockOtp: process.env.NODE_ENV === 'development' ? mockOtp : undefined });
+    devLog(`[AUTH] Register successful: user=${user.id}, email=${email}, username=${username}`);
   } catch (err) {
     console.error('Register error:', err);
     if (err && typeof err === 'object' && 'name' in err && (err as any).name === 'ZodError') {
@@ -113,17 +125,27 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
   try {
     const { email, password } = req.body;
 
-    const user = await prisma.user.findUnique({
-      where: { email },
+    // Support both email and phone login
+    const isEmail = email.includes('@');
+    const normalizedPhone = isEmail ? null : normalizePhone(email);
+
+    devLog(`[AUTH] Login attempt: ${isEmail ? 'email' : 'phone'}=${isEmail ? email : normalizedPhone}`);
+
+    const user = await prisma.user.findFirst({
+      where: isEmail
+        ? { email }
+        : { phone: normalizedPhone },
       include: { profile: true, settings: true, wallet: true },
     });
     if (!user || !user.passwordHash) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      devLog(`[AUTH] Login failed: user not found or no password hash`);
+      return res.status(401).json({ error: 'Invalid email/phone or password' });
     }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      devLog(`[AUTH] Login failed: invalid password for user ${user.id}`);
+      return res.status(401).json({ error: 'Invalid email/phone or password' });
     }
 
     const { accessToken, refreshToken } = generateTokenPair({ userId: user.id, email: user.email });
@@ -138,6 +160,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
       },
     });
 
+    devLog(`[AUTH] Login successful: user=${user.id}`);
     res.json({ token: accessToken, refreshToken, user });
   } catch (err) {
     console.error('Login error:', err);
@@ -213,6 +236,7 @@ router.patch('/profile', authenticate, validate(updateProfileSchema), async (req
     if (body.username !== undefined) updateData.username = body.username;
     if (body.bio !== undefined) updateData.bio = body.bio;
     if (body.avatarUrl !== undefined) updateData.avatarUrl = body.avatarUrl;
+    if (body.avatar !== undefined) updateData.avatarUrl = body.avatar; // frontend sends 'avatar'
     if (body.city !== undefined) updateData.city = body.city;
     if (body.location !== undefined) updateData.city = body.location; // frontend sends 'location'
     if (body.countryCode !== undefined) updateData.countryCode = body.countryCode;

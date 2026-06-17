@@ -3,6 +3,8 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { createGoalSchema, completeTaskSchema, shieldDaySchema, updateGoalSchema, forfeitGoalSchema, createActivitySessionSchema } from '../validators';
+import { validateActivitySession, validatePhotoExif } from '../lib/antiSpoof';
+import { activitySessionRateLimit, goalCompleteRateLimit } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -58,10 +60,75 @@ router.get('/activity-sessions', authenticate, async (req: Request, res: Respons
 });
 
 // POST /api/goals/activity-sessions (MUST be before /:id to avoid route collision)
-router.post('/activity-sessions', authenticate, validate(createActivitySessionSchema), async (req: Request, res: Response) => {
+router.post('/activity-sessions', authenticate, activitySessionRateLimit, validate(createActivitySessionSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const { goalId, activityType, startedAt, endedAt, durationSeconds, distanceMeters, steps, caloriesBurned, avgPaceSecsPerKm, gpsAccuracyMeters, routePoints } = req.body;
+    const { goalId, activityType, startedAt, endedAt, durationSeconds, distanceMeters, steps, caloriesBurned, avgPaceSecsPerKm, gpsAccuracyMeters, routePoints, photoUrl, photoExifData } = req.body;
+
+    let goalActivityType: string | undefined;
+    let goalStartDate: string | undefined;
+    let goalEndDate: string | undefined;
+    if (goalId) {
+      const goal = await prisma.goal.findFirst({ where: { id: goalId, userId, deletedAt: null } });
+      if (goal) {
+        goalActivityType = goal.activityType;
+        goalStartDate = goal.startDate.toISOString();
+        goalEndDate = goal.endDate.toISOString();
+      }
+    }
+
+    const sessionStart = new Date(startedAt).getTime();
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    const recentDuplicate = await prisma.activitySession.findFirst({
+      where: {
+        userId,
+        startedAt: { gte: new Date(fiveMinAgo) },
+        durationSeconds,
+      },
+    });
+    if (recentDuplicate) {
+      return res.status(409).json({ error: 'Duplicate session detected' });
+    }
+
+    const antiSpoof = validateActivitySession({
+      activityType,
+      startedAt,
+      endedAt,
+      durationSeconds,
+      distanceMeters,
+      routePoints,
+      goalActivityType,
+      goalStartDate,
+      goalEndDate,
+    });
+
+    if (!antiSpoof.passed) {
+      return res.status(400).json({
+        error: 'Activity session failed validation',
+        flags: antiSpoof.flags,
+        score: antiSpoof.score,
+      });
+    }
+
+    let photoResult: { passed: boolean; flags: string[]; score: number } | undefined;
+    if (photoExifData || photoUrl) {
+      photoResult = validatePhotoExif({
+        photoExifData: photoExifData as Record<string, unknown> | undefined,
+        sessionStartedAt: startedAt,
+        sessionEndedAt: endedAt,
+      });
+      if (!photoResult.passed) {
+        return res.status(400).json({
+          error: 'Photo verification failed',
+          flags: photoResult.flags,
+          score: photoResult.score,
+        });
+      }
+    }
+
+    const combinedFlags = [...antiSpoof.flags, ...(photoResult?.flags ?? [])];
+    const combinedScore = antiSpoof.score + (photoResult?.score ?? 0);
+    const combinedPassed = combinedScore < 30;
 
     const session = await prisma.$transaction(async (tx) => {
       const s = await tx.activitySession.create({
@@ -78,7 +145,11 @@ router.post('/activity-sessions', authenticate, validate(createActivitySessionSc
           caloriesBurned,
           avgPaceSecsPerKm,
           gpsAccuracyMeters,
-          verificationStatus: 'pending',
+          photoUrl: photoUrl ?? null,
+          photoExifData: photoExifData ?? null,
+          verificationStatus: combinedPassed ? 'passed' : 'pending',
+          antiSpoofPassed: combinedPassed,
+          antiSpoofFlags: combinedFlags,
         },
       });
 
@@ -100,7 +171,7 @@ router.post('/activity-sessions', authenticate, validate(createActivitySessionSc
       return s;
     });
 
-    res.status(201).json({ session });
+    res.status(201).json({ session, antiSpoof: { passed: combinedPassed, score: combinedScore } });
   } catch (err) {
     console.error('Activity session create error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -251,7 +322,7 @@ router.post('/', authenticate, validate(createGoalSchema), async (req: Request, 
 });
 
 // POST /api/goals/complete
-router.post('/complete', authenticate, validate(completeTaskSchema), async (req: Request, res: Response) => {
+router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeTaskSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
     const { goalId, activitySessionId } = req.body;
@@ -265,13 +336,28 @@ router.post('/complete', authenticate, validate(completeTaskSchema), async (req:
     const existing = await prisma.dailyTaskLog.findFirst({
       where: { goalId, taskDate: new Date(today) }
     });
-if (existing?.status === 'completed') {
+    if (existing?.status === 'completed') {
       return res.status(400).json({ error: 'Task already completed today' });
     }
 
-    const session = activitySessionId
-      ? await prisma.activitySession.findUnique({ where: { id: activitySessionId } })
-      : null;
+    const session = await prisma.activitySession.findUnique({ where: { id: activitySessionId } });
+    if (!session) {
+      return res.status(400).json({ error: 'Activity session not found' });
+    }
+    if (session.userId !== userId) {
+      return res.status(403).json({ error: 'Session does not belong to you' });
+    }
+    if (session.verificationStatus === 'failed') {
+      return res.status(400).json({ error: 'Activity session failed verification' });
+    }
+    if (session.activityType !== goal.activityType) {
+      return res.status(400).json({ error: `Session activity type (${session.activityType}) does not match goal (${goal.activityType})` });
+    }
+
+    const sessionDate = new Date(session.endedAt).toISOString().split('T')[0];
+    if (sessionDate !== today) {
+      return res.status(400).json({ error: 'Activity session must be from today' });
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const logCount = await tx.dailyTaskLog.count({
