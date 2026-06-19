@@ -64,7 +64,7 @@ export const createGoalSchema = z.object({
 
 export const completeTaskSchema = z.object({
   goalId: z.string().uuid(),
-  activitySessionId: z.string().uuid(),
+  activitySessionId: z.string().uuid().optional(),
 });
 
 export const shieldDaySchema = z.object({

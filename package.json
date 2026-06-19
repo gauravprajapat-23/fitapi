@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev --schema=prisma/schema.prisma",
     "db:push": "prisma db push --schema=prisma/schema.prisma",
     "db:seed": "tsx src/seed.ts",
-    "db:studio": "prisma studio --schema=prisma/schema.prisma"
+    "db:studio": "prisma studio --schema=prisma/schema.prisma",
+    "cron:mark-missed-days": "node -e \"fetch(process.env.BACKEND_URL + '/api/goals/mark-missed-days', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\""
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

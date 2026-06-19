@@ -4,7 +4,7 @@ import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { createGoalSchema, completeTaskSchema, shieldDaySchema, updateGoalSchema, forfeitGoalSchema, createActivitySessionSchema } from '../validators';
 import { validateActivitySession, validatePhotoExif } from '../lib/antiSpoof';
-import { activitySessionRateLimit, goalCompleteRateLimit } from '../middleware/rateLimit';
+import { activitySessionRateLimit, goalCompleteRateLimit, requireCronSecret } from '../middleware/rateLimit';
 
 const router = Router();
 
@@ -302,7 +302,7 @@ router.post('/', authenticate, validate(createGoalSchema), async (req: Request, 
       });
 
       const streak = await tx.streak.create({
-        data: { userId, goalId: g.id, shieldRestoresLimit: 0 },
+        data: { userId, goalId: g.id, shieldRestoresLimit: 1 },
       });
 
       return { ...g, streak };
@@ -329,34 +329,59 @@ router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeT
 
     const goal = await prisma.goal.findFirst({ where: { id: goalId, userId, deletedAt: null } });
     if (!goal || goal.status !== 'active') {
-      return res.status(400).json({ error: 'Goal not found or not active' });
+      return res.status(400).json({ error: 'Goal is not active or not found' });
     }
 
     const today = new Date().toISOString().split('T')[0];
+
+    // Check if today is a rest day
+    if (goal.restDaysEnabled && goal.restDayOfWeek.length > 0) {
+      const dayOfWeek = new Date(today).getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+      const adjustedDay = dayOfWeek === 0 ? 7 : dayOfWeek; // Convert to 1=Mon, ..., 7=Sun
+      if (goal.restDayOfWeek.includes(adjustedDay)) {
+        const existingRestLog = await prisma.dailyTaskLog.findFirst({
+          where: { goalId, taskDate: new Date(today) },
+        });
+        if (!existingRestLog) {
+          // Auto-create rest day log
+          await prisma.dailyTaskLog.create({
+            data: { goalId, userId, taskDate: new Date(today), status: 'rest_day' },
+          });
+        }
+        return res.status(200).json({ log: { goalId, date: today, status: 'rest_day' }, message: 'Today is a rest day' });
+      }
+    }
+
     const existing = await prisma.dailyTaskLog.findFirst({
       where: { goalId, taskDate: new Date(today) }
     });
     if (existing?.status === 'completed') {
       return res.status(400).json({ error: 'Task already completed today' });
     }
-
-    const session = await prisma.activitySession.findUnique({ where: { id: activitySessionId } });
-    if (!session) {
-      return res.status(400).json({ error: 'Activity session not found' });
-    }
-    if (session.userId !== userId) {
-      return res.status(403).json({ error: 'Session does not belong to you' });
-    }
-    if (session.verificationStatus === 'failed') {
-      return res.status(400).json({ error: 'Activity session failed verification' });
-    }
-    if (session.activityType !== goal.activityType) {
-      return res.status(400).json({ error: `Session activity type (${session.activityType}) does not match goal (${goal.activityType})` });
+    if (existing?.status === 'rest_day') {
+      return res.status(200).json({ log: existing, message: 'Today is a rest day' });
     }
 
-    const sessionDate = new Date(session.endedAt).toISOString().split('T')[0];
-    if (sessionDate !== today) {
-      return res.status(400).json({ error: 'Activity session must be from today' });
+    // Validate activity session if provided
+    if (activitySessionId) {
+      const session = await prisma.activitySession.findUnique({ where: { id: activitySessionId } });
+      if (!session) {
+        return res.status(400).json({ error: 'Activity session not found' });
+      }
+      if (session.userId !== userId) {
+        return res.status(403).json({ error: 'Session does not belong to you' });
+      }
+      if (session.verificationStatus === 'failed') {
+        return res.status(400).json({ error: 'Activity session failed verification' });
+      }
+      if (session.activityType !== goal.activityType) {
+        return res.status(400).json({ error: `Session activity type (${session.activityType}) does not match goal (${goal.activityType})` });
+      }
+
+      const sessionDate = new Date(session.endedAt).toISOString().split('T')[0];
+      if (sessionDate !== today) {
+        return res.status(400).json({ error: 'Activity session must be from today' });
+      }
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -528,6 +553,15 @@ router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: R
 
     const today = new Date().toISOString().split('T')[0];
 
+    // Don't forfeit on rest days
+    if (goal.restDaysEnabled && goal.restDayOfWeek.length > 0) {
+      const dayOfWeek = new Date(today).getDay();
+      const adjustedDay = dayOfWeek === 0 ? 7 : dayOfWeek;
+      if (goal.restDayOfWeek.includes(adjustedDay)) {
+        return res.status(200).json({ message: 'Today is a rest day — no forfeit needed', forfeitedAmount: 0 });
+      }
+    }
+
     const existing = await prisma.dailyTaskLog.findFirst({
       where: { goalId, taskDate: new Date(today) },
     });
@@ -535,39 +569,46 @@ router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: R
       return res.status(400).json({ error: 'A log already exists for today' });
     }
 
+    const dailyEarnback = Number(goal.dailyEarnback);
+    const totalEarned = Number(goal.totalEarned);
+    const stakeAmount = Number(goal.stakeAmount);
+
     await prisma.$transaction(async (tx) => {
+      // Mark today as missed
       await tx.dailyTaskLog.create({
         data: { goalId, userId, taskDate: new Date(today), status: 'missed', forfeitedAmount: goal.dailyEarnback },
       });
 
+      // Forfeit today's earnback + set goal as abandoned
       await tx.goal.update({
         where: { id: goalId },
         data: {
-          totalForfeited: { increment: goal.dailyEarnback },
+          totalForfeited: { increment: dailyEarnback },
           status: 'abandoned',
         },
       });
 
       const wallet = await tx.wallet.findUnique({ where: { userId } });
       if (wallet) {
-        const newEscrowBalance = Number(wallet.escrowBalance) - Number(goal.dailyEarnback);
+        // Deduct today's forfeited earnback from escrow
         await tx.wallet.update({
           where: { userId },
           data: {
-            escrowBalance: { decrement: goal.dailyEarnback },
-            totalForfeitedAllTime: { increment: goal.dailyEarnback },
+            escrowBalance: { decrement: dailyEarnback },
+            totalForfeitedAllTime: { increment: dailyEarnback },
             version: { increment: 1 },
           },
         });
+
         await tx.transaction.create({
           data: {
             userId,
             walletId: wallet.id,
             type: 'forfeit',
             direction: 'debit',
-            amount: goal.dailyEarnback,
+            amount: dailyEarnback,
             balanceBefore: Number(wallet.escrowBalance),
-            balanceAfter: newEscrowBalance,
+            balanceAfter: Number(wallet.escrowBalance) - dailyEarnback,
             status: 'completed',
             referenceId: goalId,
             referenceType: 'goal',
@@ -575,6 +616,39 @@ router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: R
             processedAt: new Date(),
           },
         });
+
+        // Refund remaining escrow (stake - earned - forfeited today) back to available balance
+        const remainingEscrow = stakeAmount - totalEarned - dailyEarnback;
+        if (remainingEscrow > 0) {
+          const walletAfterForfeit = await tx.wallet.findUnique({ where: { userId } });
+          if (walletAfterForfeit) {
+            await tx.wallet.update({
+              where: { userId },
+              data: {
+                availableBalance: { increment: remainingEscrow },
+                escrowBalance: { decrement: remainingEscrow },
+                version: { increment: 1 },
+              },
+            });
+
+            await tx.transaction.create({
+              data: {
+                userId,
+                walletId: wallet.id,
+                type: 'refund',
+                direction: 'credit',
+                amount: remainingEscrow,
+                balanceBefore: Number(walletAfterForfeit.availableBalance),
+                balanceAfter: Number(walletAfterForfeit.availableBalance) + remainingEscrow,
+                status: 'completed',
+                referenceId: goalId,
+                referenceType: 'goal',
+                description: `Refund for abandoned goal: ${goal.title}`,
+                processedAt: new Date(),
+              },
+            });
+          }
+        }
       }
 
       await tx.streak.update({
@@ -586,6 +660,128 @@ router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: R
     res.json({ log: { goalId, date: today, status: 'missed', forfeitedAmount: goal.dailyEarnback }, forfeitedAmount: goal.dailyEarnback });
   } catch (err) {
     console.error('Forfeit error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/goals/mark-missed-days (cron endpoint — auto-detect missed days)
+router.post('/mark-missed-days', requireCronSecret, async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const today = new Date(todayStr);
+
+    // Find all active goals past their start date
+    const activeGoals = await prisma.goal.findMany({
+      where: {
+        status: 'active',
+        startDate: { lte: today },
+      },
+    });
+
+    let totalMarkedMissed = 0;
+
+    for (const goal of activeGoals) {
+      try {
+        const goalStartDate = new Date(goal.startDate);
+        const goalEndDate = new Date(goal.endDate);
+        const effectiveEnd = today < goalEndDate ? today : goalEndDate;
+
+        // Get all existing logs for this goal
+        const existingLogs = await prisma.dailyTaskLog.findMany({
+          where: { goalId: goal.id },
+          select: { taskDate: true, status: true },
+        });
+
+        const loggedDates = new Set(
+          existingLogs.map((l) => l.taskDate.toISOString().split('T')[0])
+        );
+
+        // Find all days from start to effectiveEnd that have no log
+        const missedDays: Date[] = [];
+        const checkDate = new Date(goalStartDate);
+        while (checkDate <= effectiveEnd) {
+          const dateStr = checkDate.toISOString().split('T')[0];
+          if (!loggedDates.has(dateStr)) {
+            missedDays.push(new Date(dateStr));
+          }
+          checkDate.setDate(checkDate.getDate() + 1);
+        }
+
+        if (missedDays.length === 0) continue;
+
+        const dailyEarnback = Number(goal.dailyEarnback);
+
+        await prisma.$transaction(async (tx) => {
+          // Create missed logs for each day
+          for (const missedDate of missedDays) {
+            await tx.dailyTaskLog.create({
+              data: {
+                goalId: goal.id,
+                userId: goal.userId,
+                taskDate: missedDate,
+                status: 'missed',
+                forfeitedAmount: dailyEarnback,
+              },
+            });
+          }
+
+          const totalForfeitAmount = dailyEarnback * missedDays.length;
+
+          // Update goal totals
+          await tx.goal.update({
+            where: { id: goal.id },
+            data: {
+              totalForfeited: { increment: totalForfeitAmount },
+            },
+          });
+
+          // Deduct from escrow
+          const wallet = await tx.wallet.findUnique({ where: { userId: goal.userId } });
+          if (wallet && Number(wallet.escrowBalance) >= totalForfeitAmount) {
+            await tx.wallet.update({
+              where: { userId: goal.userId },
+              data: {
+                escrowBalance: { decrement: totalForfeitAmount },
+                totalForfeitedAllTime: { increment: totalForfeitAmount },
+                version: { increment: 1 },
+              },
+            });
+
+            await tx.transaction.create({
+              data: {
+                userId: goal.userId,
+                walletId: wallet.id,
+                type: 'forfeit',
+                direction: 'debit',
+                amount: totalForfeitAmount,
+                balanceBefore: Number(wallet.escrowBalance),
+                balanceAfter: Number(wallet.escrowBalance) - totalForfeitAmount,
+                status: 'completed',
+                referenceId: goal.id,
+                referenceType: 'goal',
+                description: `Auto-forfeit: ${missedDays.length} missed day(s) on ${goal.title}`,
+                processedAt: new Date(),
+              },
+            });
+          }
+
+          // Reset streak since there are missed days
+          await tx.streak.update({
+            where: { userId_goalId: { userId: goal.userId, goalId: goal.id } },
+            data: { currentStreak: 0 },
+          });
+        });
+
+        totalMarkedMissed += missedDays.length;
+      } catch (err) {
+        console.error(`Failed to mark missed days for goal ${goal.id}:`, err);
+      }
+    }
+
+    res.json({ markedMissed: totalMarkedMissed, goalsProcessed: activeGoals.length });
+  } catch (err) {
+    console.error('Mark missed days error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
