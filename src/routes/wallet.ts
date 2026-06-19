@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { addMoneySchema, withdrawSchema, addBankAccountSchema } from '../validators';
+import { addMoneySchema, withdrawSchema, addBankAccountSchema, verifyPaymentSchema } from '../validators';
+import { createRazorpayOrder, verifyRazorpayPayment, verifyWebhookSignature } from '../lib/razorpay';
 
 const router = Router();
 
@@ -50,72 +51,200 @@ router.get('/transactions/:id', authenticate, async (req: Request, res: Response
   }
 });
 
-// POST /api/wallet/add
+// POST /api/wallet/add — Create Razorpay order
 router.post('/add', authenticate, validate(addMoneySchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
-    let { amount, gateway } = req.body;
-    const gatewayOrderId = req.body.gatewayOrderId ?? crypto.randomUUID();
+    const { amount, gateway } = req.body;
     const gatewayMap: Record<string, string> = { upi: 'upi_direct', card: 'razorpay', netbanking: 'razorpay' };
-    gateway = gatewayMap[gateway] ?? gateway;
+    const normalizedGateway = gatewayMap[gateway] ?? gateway;
 
-    console.log('[Wallet Add] Request:', { userId, amount, gateway, gatewayOrderId });
-
-    // Log wallet BEFORE
-    const beforeWallet = await prisma.wallet.findUnique({ where: { userId } });
-    console.log('[Wallet Add] Wallet BEFORE:', JSON.stringify(beforeWallet));
-
-    if (!beforeWallet) {
-      console.error('[Wallet Add] No wallet found for user:', userId);
+    const wallet = await prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
       return res.status(400).json({ error: 'Wallet not found' });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      console.log('[Wallet Add] Creating payment order...');
-      const order = await tx.paymentOrder.create({
-        data: { userId, gateway, gatewayOrderId, amount, status: 'paid' },
-      });
-      console.log('[Wallet Add] Payment order created:', order.id);
+    // Create Razorpay order (amount in paise)
+    const amountPaise = Math.round(Number(amount) * 100);
+    const receipt = `fitstake_${userId.slice(0, 8)}_${Date.now()}`;
 
-      console.log('[Wallet Add] Updating wallet balance...');
+    const razorpayOrder = await createRazorpayOrder(amountPaise, receipt);
+
+    // Store order in DB with status 'created'
+    const order = await prisma.paymentOrder.create({
+      data: {
+        userId,
+        gateway: normalizedGateway as any,
+        gatewayOrderId: razorpayOrder.id,
+        amount,
+        status: 'created',
+      },
+    });
+
+    res.status(201).json({
+      orderId: razorpayOrder.id,
+      amount: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      paymentOrderId: order.id,
+    });
+  } catch (err) {
+    console.error('[Wallet Add] ERROR:', err);
+    res.status(500).json({ error: 'Failed to create payment order' });
+  }
+});
+
+// POST /api/wallet/verify-payment — Verify Razorpay payment after checkout
+router.post('/verify-payment', authenticate, validate(verifyPaymentSchema), async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing payment verification fields' });
+    }
+
+    // Verify signature
+    const isValid = verifyRazorpayPayment(razorpay_order_id, razorpay_payment_id, razorpay_signature);
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid payment signature' });
+    }
+
+    // Find the payment order
+    const paymentOrder = await prisma.paymentOrder.findFirst({
+      where: { gatewayOrderId: razorpay_order_id, userId },
+    });
+    if (!paymentOrder) {
+      return res.status(404).json({ error: 'Payment order not found' });
+    }
+    if (paymentOrder.status === 'paid') {
+      return res.status(200).json({ message: 'Payment already processed' });
+    }
+
+    const wallet = await prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not found' });
+    }
+
+    // Credit wallet in transaction
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.paymentOrder.update({
+        where: { id: paymentOrder.id },
+        data: {
+          status: 'paid',
+          gatewayPaymentId: razorpay_payment_id,
+          gatewaySignature: razorpay_signature,
+        },
+      });
+
       const updatedWallet = await tx.wallet.update({
         where: { userId },
         data: {
-          availableBalance: { increment: amount },
+          availableBalance: { increment: paymentOrder.amount },
           version: { increment: 1 },
         },
       });
-      console.log('[Wallet Add] Wallet AFTER update:', JSON.stringify(updatedWallet));
 
-      console.log('[Wallet Add] Creating transaction record...');
-      const balanceBefore = Number(beforeWallet.availableBalance);
-      const balanceAfter = balanceBefore + Number(amount);
+      const balanceBefore = Number(wallet.availableBalance);
+      const balanceAfter = balanceBefore + Number(paymentOrder.amount);
+
       const txRecord = await tx.transaction.create({
         data: {
           userId,
-          walletId: beforeWallet.id,
+          walletId: wallet.id,
           type: 'deposit',
           direction: 'credit',
-          amount,
+          amount: paymentOrder.amount,
           balanceBefore,
           balanceAfter,
           status: 'completed',
-          referenceId: order.id,
+          referenceId: paymentOrder.id,
           referenceType: 'payment_order',
-          description: `Wallet top-up via ${gateway}`,
+          description: `Wallet top-up via Razorpay`,
           processedAt: new Date(),
         },
       });
-      console.log('[Wallet Add] Transaction created:', txRecord.id);
 
-      return { order, transaction: txRecord };
+      return { order: paymentOrder, transaction: txRecord, wallet: updatedWallet };
     });
 
-    console.log('[Wallet Add] Success — sending 201 response');
-    res.status(201).json(result);
+    res.json(result);
   } catch (err) {
-    console.error('[Wallet Add] ERROR:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[Verify Payment] ERROR:', err);
+    res.status(500).json({ error: 'Payment verification failed' });
+  }
+});
+
+// POST /api/wallet/razorpay-webhook — Razorpay webhook handler
+router.post('/razorpay-webhook', async (req: Request, res: Response) => {
+  try {
+    const webhookSignature = req.headers['x-razorpay-signature'] as string;
+    const rawBody = (req as any).rawBody;
+
+    if (!verifyWebhookSignature(rawBody, webhookSignature)) {
+      console.error('[Webhook] Invalid signature');
+      return res.status(400).json({ error: 'Invalid webhook signature' });
+    }
+
+    const event = req.body;
+    if (event.event === 'payment.captured') {
+      const payment = event.payload.payment.entity;
+      const orderId = payment.order_id;
+      const paymentId = payment.id;
+
+      const paymentOrder = await prisma.paymentOrder.findFirst({
+        where: { gatewayOrderId: orderId },
+      });
+
+      if (paymentOrder && paymentOrder.status !== 'paid') {
+        const wallet = await prisma.wallet.findUnique({ where: { userId: paymentOrder.userId } });
+        if (wallet) {
+          await prisma.$transaction(async (tx) => {
+            await tx.paymentOrder.update({
+              where: { id: paymentOrder.id },
+              data: {
+                status: 'paid',
+                gatewayPaymentId: paymentId,
+                webhookEvents: event as any,
+              },
+            });
+
+            await tx.wallet.update({
+              where: { userId: paymentOrder.userId },
+              data: {
+                availableBalance: { increment: paymentOrder.amount },
+                version: { increment: 1 },
+              },
+            });
+
+            const balanceBefore = Number(wallet.availableBalance);
+            const balanceAfter = balanceBefore + Number(paymentOrder.amount);
+
+            await tx.transaction.create({
+              data: {
+                userId: paymentOrder.userId,
+                walletId: wallet.id,
+                type: 'deposit',
+                direction: 'credit',
+                amount: paymentOrder.amount,
+                balanceBefore,
+                balanceAfter,
+                status: 'completed',
+                referenceId: paymentOrder.id,
+                referenceType: 'payment_order',
+                description: `Wallet top-up via Razorpay (webhook)`,
+                processedAt: new Date(),
+              },
+            });
+          });
+        }
+      }
+    }
+
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('[Webhook] ERROR:', err);
+    res.status(500).json({ error: 'Webhook processing failed' });
   }
 });
 

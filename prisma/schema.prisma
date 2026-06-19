@@ -1164,3 +1164,21 @@ model DisputeTicket {
   @@index([status, slaDeadline])
   @@map("dispute_tickets")
 }
+
+// ── OTP Verification ──
+
+model OtpVerification {
+  id            String    @id @default(uuid()) @db.Uuid
+  identifier    String    @db.VarChar(320)   // email or phone
+  identifierType String   @db.VarChar(10)    // 'email' or 'phone'
+  otpHash       String    @db.VarChar(128)   // bcrypt hash of the OTP
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  verified      Boolean   @default(false)
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+  expiresAt     DateTime  @db.Timestamptz
+  usedAt        DateTime? @db.Timestamptz
+
+  @@index([identifier, identifierType])
+  @@map("otp_verifications")
+}

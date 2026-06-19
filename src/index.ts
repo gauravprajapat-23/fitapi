@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { PrismaClient } from '@prisma/client';
 import { requestLogger } from './middleware/requestLogger';
 
@@ -13,10 +14,63 @@ export const prisma = new PrismaClient();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+const isProduction = process.env.NODE_ENV === 'production';
 
+// Security headers
 app.use(helmet());
-app.use(cors());
-app.use(express.json());
+
+// CORS — allow configured origins in production, all in development
+const allowedOrigins = (process.env.CORS_ORIGINS ?? '').split(',').filter(Boolean);
+app.use(cors({
+  origin: isProduction && allowedOrigins.length > 0 ? allowedOrigins : true,
+  credentials: true,
+}));
+
+// Rate limiting
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many auth attempts, please try again later' },
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Webhook rate limit exceeded' },
+});
+
+app.use('/api/', globalLimiter);
+app.use('/api/auth', authLimiter);
+app.use('/api/wallet/razorpay-webhook', webhookLimiter);
+
+// Store raw body for Razorpay webhook signature verification
+app.use('/api/wallet/razorpay-webhook', (req, _res, next) => {
+  let data = '';
+  req.on('data', (chunk) => { data += chunk; });
+  req.on('end', () => {
+    (req as any).rawBody = data;
+    try {
+      req.body = JSON.parse(data);
+    } catch {
+      req.body = {};
+    }
+    next();
+  });
+});
+
+app.use(express.json({ limit: '1mb' }));
 app.use(requestLogger);
 
 // Health check
@@ -57,8 +111,17 @@ app.use('/api/devices', deviceRoutes);
 app.use('/api/wearables', wearableRoutes);
 app.use('/api/disputes', disputeRoutes);
 
-// Use the parsed number in your listen call
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// 404 handler
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
+// Global error handler
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT} (${isProduction ? 'production' : 'development'})`);
+});

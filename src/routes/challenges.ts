@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createChallengeSchema, joinChallengeSchema } from '../validators';
+import { createChallengeSchema, joinChallengeSchema, completeChallengeSchema } from '../validators';
 import { validateChallengeCompletion } from '../lib/antiSpoof';
 import { challengeCompleteRateLimit, requireCronSecret } from '../middleware/rateLimit';
 
@@ -238,7 +238,7 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
 });
 
 // POST /api/challenges/:id/complete — mark a participant's session as done, update progress
-router.post('/:id/complete', authenticate, challengeCompleteRateLimit, async (req: Request, res: Response) => {
+router.post('/:id/complete', authenticate, challengeCompleteRateLimit, validate(completeChallengeSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
     const challengeId = req.params.id as string;

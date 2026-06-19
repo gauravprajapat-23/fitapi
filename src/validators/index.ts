@@ -17,11 +17,11 @@ export const loginSchema = z.object({
 });
 
 export const otpSendSchema = z.object({
-  phone: z.string().regex(/^\+91\d{10}$/),
+  email: z.string().email().max(320),
 });
 
 export const otpVerifySchema = z.object({
-  phone: z.string().regex(/^\+91\d{10}$/),
+  email: z.string().email().max(320),
   otp: z.string().length(6),
 });
 
@@ -199,4 +199,62 @@ export const createSubscriptionSchema = z.object({
 
 export const cancelSubscriptionSchema = z.object({
   reason: z.string().optional(),
+});
+
+// ── Auth (missing) ──
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1),
+});
+
+export const updateSettingsSchema = z.object({
+  currency: z.string().length(3).optional(),
+  language: z.string().max(5).optional(),
+  timezone: z.string().max(50).optional(),
+  theme: z.enum(['dark', 'light', 'system']).optional(),
+  distanceUnit: z.enum(['km', 'miles']).optional(),
+  notifTaskReminder: z.boolean().optional(),
+  notifStreakAlert: z.boolean().optional(),
+  notifChallengeUpdate: z.boolean().optional(),
+  notifWallet: z.boolean().optional(),
+  notifMarketing: z.boolean().optional(),
+  reminderTime: z.string().optional(),
+  biometricAuthEnabled: z.boolean().optional(),
+  shareActivityPublicly: z.boolean().optional(),
+  showGoalsOnProfile: z.boolean().optional(),
+});
+
+// ── Wallet (missing) ──
+
+export const verifyPaymentSchema = z.object({
+  razorpay_order_id: z.string().min(1),
+  razorpay_payment_id: z.string().min(1),
+  razorpay_signature: z.string().min(1),
+});
+
+// ── Challenges (missing) ──
+
+export const completeChallengeSchema = z.object({
+  activitySessionId: z.string().uuid().optional(),
+});
+
+// ── Social (missing) ──
+
+export const addReactionSchema = z.object({
+  emoji: z.string().min(1).max(8),
+});
+
+export const removeReactionSchema = z.object({
+  emoji: z.string().min(1).max(8),
+});
+
+// ── Pagination helpers ──
+
+export const paginationSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const analyticsPeriodSchema = z.object({
+  period: z.enum(['this_week', 'this_month', 'all_time']).default('this_month'),
 });

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { sendFriendRequestSchema, respondFriendRequestSchema, sendMessageSchema } from '../validators';
+import { sendFriendRequestSchema, respondFriendRequestSchema, sendMessageSchema, addReactionSchema, removeReactionSchema } from '../validators';
 
 const router = Router();
 
@@ -179,7 +179,7 @@ router.post('/chat', authenticate, validate(sendMessageSchema), async (req: Requ
 // ── Message Reactions ──
 
 // POST /api/social/chat/:messageId/reactions
-router.post('/chat/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+router.post('/chat/:messageId/reactions', authenticate, validate(addReactionSchema), async (req: Request, res: Response) => {
   try {
     const { emoji } = req.body;
     if (!emoji || emoji.length > 8) {
@@ -209,7 +209,7 @@ router.post('/chat/:messageId/reactions', authenticate, async (req: Request, res
 });
 
 // DELETE /api/social/chat/:messageId/reactions
-router.delete('/chat/:messageId/reactions', authenticate, async (req: Request, res: Response) => {
+router.delete('/chat/:messageId/reactions', authenticate, validate(removeReactionSchema), async (req: Request, res: Response) => {
   try {
     const { emoji } = req.body;
     if (!emoji) {

@@ -4,7 +4,8 @@ import { prisma } from '../lib/prisma';
 import { signToken, generateTokenPair } from '../lib/jwt';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { registerSchema, loginSchema, otpSendSchema, otpVerifySchema, updateProfileSchema, submitKycSchema } from '../validators';
+import { registerSchema, loginSchema, otpSendSchema, otpVerifySchema, updateProfileSchema, submitKycSchema, refreshTokenSchema, updateSettingsSchema } from '../validators';
+import { sendEmailOtp, verifyEmailOtp } from '../lib/otp';
 
 const router = Router();
 const devLog = process.env.NODE_ENV !== 'production' ? console.log : (..._args: unknown[]) => {};
@@ -120,6 +121,36 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
   }
 });
 
+// POST /api/auth/otp/send
+router.post('/otp/send', validate(otpSendSchema), async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    const result = await sendEmailOtp(email);
+    if (!result.success) {
+      return res.status(429).json({ error: result.error, cooldown: result.cooldown });
+    }
+    res.json({ message: 'Verification code sent', expiresIn: 300 });
+  } catch (err) {
+    console.error('OTP send error:', err);
+    res.status(500).json({ error: 'Failed to send verification code' });
+  }
+});
+
+// POST /api/auth/otp/verify
+router.post('/otp/verify', validate(otpVerifySchema), async (req: Request, res: Response) => {
+  try {
+    const { email, otp } = req.body;
+    const result = await verifyEmailOtp(email, otp);
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+    res.json({ message: 'Email verified successfully', verified: true });
+  } catch (err) {
+    console.error('OTP verify error:', err);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
 // POST /api/auth/login
 router.post('/login', validate(loginSchema), async (req: Request, res: Response) => {
   try {
@@ -169,12 +200,9 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
 });
 
 // POST /api/auth/refresh
-router.post('/refresh', async (req: Request, res: Response) => {
+router.post('/refresh', validate(refreshTokenSchema), async (req: Request, res: Response) => {
   try {
     const { refreshToken } = req.body;
-    if (!refreshToken) {
-      return res.status(400).json({ error: 'Refresh token required' });
-    }
 
     const user = await prisma.user.findFirst({
       where: { refreshToken, refreshTokenExpires: { gt: new Date() } },
@@ -344,7 +372,7 @@ router.get('/settings', authenticate, async (req: Request, res: Response) => {
 });
 
 // PATCH /api/auth/settings
-router.patch('/settings', authenticate, async (req: Request, res: Response) => {
+router.patch('/settings', authenticate, validate(updateSettingsSchema), async (req: Request, res: Response) => {
   try {
     const allowed = ['currency', 'language', 'timezone', 'theme', 'distanceUnit', 'notifTaskReminder', 'notifStreakAlert', 'notifChallengeUpdate', 'notifWallet', 'notifMarketing', 'reminderTime', 'biometricAuthEnabled', 'shareActivityPublicly', 'showGoalsOnProfile'];
     const data: Record<string, unknown> = {};
