@@ -293,6 +293,12 @@ router.post('/', authenticate, validate(createGoalSchema), async (req: Request, 
       return res.status(400).json({ error: 'Insufficient balance' });
     }
 
+    const activeSubscription = await prisma.streakShieldSubscription.findFirst({
+      where: { userId, status: { in: ['active', 'trialing'] } },
+      orderBy: { currentPeriodEnd: 'desc' },
+    });
+    const shieldRestoresLimit = activeSubscription?.restoresPerMonth ?? 1;
+
     const startDate = new Date(data.startDate);
     const endDate = new Date(startDate);
     endDate.setDate(endDate.getDate() + data.durationDays - 1);
@@ -349,7 +355,7 @@ router.post('/', authenticate, validate(createGoalSchema), async (req: Request, 
       });
 
       const streak = await tx.streak.create({
-        data: { userId, goalId: g.id, shieldRestoresLimit: 1 },
+        data: { userId, goalId: g.id, shieldRestoresLimit },
       });
 
       return { ...g, streak };

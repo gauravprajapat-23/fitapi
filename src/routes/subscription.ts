@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { requireCronSecret } from '../middleware/rateLimit';
 import { createSubscriptionSchema, cancelSubscriptionSchema } from '../validators';
 
 const router = Router();
@@ -23,11 +24,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     });
 
     if (!subscription) {
-      return res.json({
-        subscription: null,
-        plan: null,
-        status: 'none',
-      });
+      return res.json({ subscription: null, plan: null, status: 'none' });
     }
 
     res.json({
@@ -48,7 +45,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       status: subscription.status,
     });
   } catch (err) {
-    console.error('Subscription get error:', err);
+    if (__DEV__) console.error('Subscription get error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -70,7 +67,6 @@ router.post('/create', authenticate, validate(createSubscriptionSchema), async (
       periodEnd.setMonth(periodEnd.getMonth() + 1);
     }
 
-    // Deactivate any existing active subscriptions
     await prisma.streakShieldSubscription.updateMany({
       where: { userId, status: { in: ['active', 'trialing'] } },
       data: { status: 'cancelled', cancelledAt: now },
@@ -109,7 +105,7 @@ router.post('/create', authenticate, validate(createSubscriptionSchema), async (
       },
     });
   } catch (err) {
-    console.error('Subscription create error:', err);
+    if (__DEV__) console.error('Subscription create error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -134,7 +130,7 @@ router.post('/cancel', authenticate, validate(cancelSubscriptionSchema), async (
       data: {
         cancelAtPeriodEnd: true,
         cancelledAt: new Date(),
-        ...(reason ? {} : {}),
+        ...(reason ? { cancelReason: reason } : {}),
       },
     });
 
@@ -149,10 +145,170 @@ router.post('/cancel', authenticate, validate(cancelSubscriptionSchema), async (
       },
     });
   } catch (err) {
-    console.error('Subscription cancel error:', err);
+    if (__DEV__) console.error('Subscription cancel error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// POST /api/subscription/resume
+router.post('/resume', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+
+    const subscription = await prisma.streakShieldSubscription.findFirst({
+      where: { userId, status: { in: ['active', 'trialing'] }, cancelAtPeriodEnd: true },
+      orderBy: { currentPeriodEnd: 'desc' },
+    });
+
+    if (!subscription) {
+      return res.status(400).json({ error: 'No cancelled subscription to resume' });
+    }
+
+    const updated = await prisma.streakShieldSubscription.update({
+      where: { id: subscription.id },
+      data: { cancelAtPeriodEnd: false, cancelledAt: null, cancelReason: null },
+    });
+
+    res.json({
+      message: 'Subscription resumed',
+      subscription: {
+        id: updated.id,
+        plan: updated.plan,
+        status: updated.status,
+        cancelAtPeriodEnd: updated.cancelAtPeriodEnd,
+        currentPeriodEnd: updated.currentPeriodEnd,
+      },
+    });
+  } catch (err) {
+    if (__DEV__) console.error('Subscription resume error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/subscription/webhook — RevenueCat webhook
+router.post('/webhook', requireCronSecret, async (req: Request, res: Response) => {
+  try {
+    const event = req.body;
+    const eventType = event?.type;
+    const appUserId = event?.app_user_id;
+    const entitlement = event?.entitlement_id;
+    const productId = event?.product_id;
+    const subscriptionId = event?.subscription_id;
+    const expiresAt = event?.expires_at ? new Date(event.expires_at * 1000) : null;
+    const purchasedAt = event?.purchased_at ? new Date(event.purchased_at * 1000) : null;
+
+    if (!appUserId) {
+      return res.status(400).json({ error: 'Missing app_user_id' });
+    }
+
+    const user = await prisma.user.findFirst({ where: { email: appUserId } });
+    if (!user) {
+      if (__DEV__) console.warn('[RevenueCat] User not found for:', appUserId);
+      return res.json({ received: true });
+    }
+
+    switch (eventType) {
+      case 'INITIAL_PURCHASE':
+      case 'RENEWAL': {
+        const plan = mapRevenueCatProduct(productId);
+        const details = PLAN_DETAILS[plan];
+        if (!details) break;
+
+        await prisma.streakShieldSubscription.updateMany({
+          where: { userId: user.id, status: { in: ['active', 'trialing'] } },
+          data: { status: 'cancelled', cancelledAt: new Date() },
+        });
+
+        const now = new Date();
+        const periodEnd = expiresAt || new Date(now);
+        if (!expiresAt) periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+        await prisma.streakShieldSubscription.create({
+          data: {
+            userId: user.id,
+            plan,
+            billingCycle: 'monthly',
+            pricePaid: details.priceMonthly / 100,
+            restoresPerMonth: details.restoresPerMonth,
+            graceWindowHours: details.graceWindowHours,
+            status: 'active',
+            currentPeriodStart: purchasedAt || now,
+            currentPeriodEnd: periodEnd,
+            revenueCatProductId: productId,
+            revenueCatSubscriptionId: subscriptionId,
+            storePlatform: 'app_store',
+          },
+        });
+        break;
+      }
+
+      case 'CANCELLATION': {
+        const sub = await prisma.streakShieldSubscription.findFirst({
+          where: { userId: user.id, revenueCatSubscriptionId: subscriptionId, status: 'active' },
+        });
+        if (sub) {
+          await prisma.streakShieldSubscription.update({
+            where: { id: sub.id },
+            data: { cancelAtPeriodEnd: true, cancelledAt: new Date(), cancelReason: 'RevenueCat cancellation' },
+          });
+        }
+        break;
+      }
+
+      case 'UNCANCELLATION': {
+        const sub = await prisma.streakShieldSubscription.findFirst({
+          where: { userId: user.id, revenueCatSubscriptionId: subscriptionId, cancelAtPeriodEnd: true },
+        });
+        if (sub) {
+          await prisma.streakShieldSubscription.update({
+            where: { id: sub.id },
+            data: { cancelAtPeriodEnd: false, cancelledAt: null, cancelReason: null },
+          });
+        }
+        break;
+      }
+
+      case 'EXPIRATION': {
+        const sub = await prisma.streakShieldSubscription.findFirst({
+          where: { userId: user.id, revenueCatSubscriptionId: subscriptionId },
+        });
+        if (sub) {
+          await prisma.streakShieldSubscription.update({
+            where: { id: sub.id },
+            data: { status: 'expired' },
+          });
+        }
+        break;
+      }
+
+      case 'BILLING_ISSUE': {
+        const sub = await prisma.streakShieldSubscription.findFirst({
+          where: { userId: user.id, revenueCatSubscriptionId: subscriptionId, status: 'active' },
+        });
+        if (sub) {
+          await prisma.streakShieldSubscription.update({
+            where: { id: sub.id },
+            data: { status: 'past_due' },
+          });
+        }
+        break;
+      }
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    if (__DEV__) console.error('RevenueCat webhook error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function mapRevenueCatProduct(productId?: string): 'basic' | 'pro' | 'elite' {
+  if (!productId) return 'basic';
+  const lower = productId.toLowerCase();
+  if (lower.includes('elite')) return 'elite';
+  if (lower.includes('pro')) return 'pro';
+  return 'basic';
+}
 
 // GET /api/subscription/plans
 router.get('/plans', async (_req: Request, res: Response) => {

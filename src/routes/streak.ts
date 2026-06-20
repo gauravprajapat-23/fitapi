@@ -28,7 +28,12 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     });
 
     const shieldRestoresLimit = subscription?.restoresPerMonth ?? 0;
-    const shieldRestoresUsed = activeGoal?.shieldRestoresUsed ?? 0;
+    const totalRestoresUsed = streaks.reduce((sum, s) => sum + s.shieldRestoresUsed, 0);
+    let shieldRestoresUsed = totalRestoresUsed;
+
+    if (subscription && subscription.currentPeriodEnd < new Date()) {
+      shieldRestoresUsed = 0;
+    }
 
     res.json({
       streak: {
@@ -51,7 +56,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       })),
     });
   } catch (err) {
-    console.error('Streak get error:', err);
+    if (__DEV__) console.error('Streak get error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -81,11 +86,27 @@ router.post('/restore', authenticate, validate(useShieldRestoreSchema), async (r
       return res.status(400).json({ error: 'No active streak found' });
     }
 
-    if (streak.shieldRestoresUsed >= streak.shieldRestoresLimit) {
-      return res.status(400).json({ error: 'No shield restores available for this goal' });
+    const allStreaks = await prisma.streak.findMany({ where: { userId } });
+    const totalRestoresUsed = allStreaks.reduce((sum, s) => sum + s.shieldRestoresUsed, 0);
+
+    let effectiveUsed = totalRestoresUsed;
+    if (subscription.currentPeriodEnd < new Date()) {
+      effectiveUsed = 0;
+    }
+
+    if (effectiveUsed >= subscription.restoresPerMonth) {
+      return res.status(400).json({ error: 'No shield restores available for this billing period' });
     }
 
     const restoreDate = date ? new Date(date) : new Date();
+    restoreDate.setHours(0, 0, 0, 0);
+
+    const goal = await prisma.goal.findUnique({ where: { id: streak.goalId! } });
+    const wallet = await prisma.wallet.findUnique({ where: { userId } });
+
+    if (!goal || !wallet) {
+      return res.status(400).json({ error: 'Goal or wallet not found' });
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const log = await tx.dailyTaskLog.create({
@@ -94,20 +115,52 @@ router.post('/restore', authenticate, validate(useShieldRestoreSchema), async (r
           userId,
           taskDate: restoreDate,
           status: 'shielded',
+          earnedAmount: goal.dailyEarnback,
         },
       });
 
       await tx.streak.update({
         where: { id: streak.id },
-        data: { shieldRestoresUsed: { increment: 1 } },
+        data: {
+          shieldRestoresUsed: effectiveUsed + 1,
+          currentStreak: streak.currentStreak + 1,
+          lastActivityDate: restoreDate,
+        },
+      });
+
+      await tx.wallet.update({
+        where: { userId },
+        data: {
+          availableBalance: { increment: goal.dailyEarnback },
+          totalEarned: { increment: goal.dailyEarnback },
+        },
+      });
+
+      await tx.walletTransaction.create({
+        data: {
+          userId,
+          type: 'earn',
+          amount: goal.dailyEarnback,
+          balanceBefore: wallet.availableBalance,
+          balanceAfter: Number(wallet.availableBalance) + goal.dailyEarnback,
+          status: 'completed',
+          referenceId: streak.goalId!,
+          referenceType: 'shield',
+          description: `Shield restore earnback for ${goal.title}`,
+          processedAt: new Date(),
+        },
       });
 
       return log;
     });
 
-    res.status(201).json({ message: 'Streak restored', log: result });
+    res.status(201).json({
+      message: 'Streak restored',
+      log: result,
+      earnback: goal.dailyEarnback,
+    });
   } catch (err) {
-    console.error('Streak restore error:', err);
+    if (__DEV__) console.error('Streak restore error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

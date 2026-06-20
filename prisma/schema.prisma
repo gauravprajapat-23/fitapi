@@ -860,6 +860,7 @@ model StreakShieldSubscription {
   currentPeriodEnd          DateTime           @db.Date
   cancelAtPeriodEnd         Boolean            @default(false)
   cancelledAt               DateTime?          @db.Timestamptz
+  cancelReason              String?            @db.VarChar(500)
   revenueCatProductId       String?            @db.VarChar(100)
   revenueCatSubscriptionId  String?            @db.VarChar(200)
   storePlatform             StorePlatform?
