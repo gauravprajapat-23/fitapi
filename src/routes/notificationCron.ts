@@ -259,24 +259,67 @@ router.post('/cron/challenge-updates', requireCronSecret, async (req: Request, r
   }
 });
 
-// POST /api/notifications/cron/expire-goals — Auto-expire overdue goals
+// POST /api/notifications/cron/expire-goals — Auto-expire overdue goals with escrow refund
 // Schedule: daily at 1am IST
 router.post('/cron/expire-goals', requireCronSecret, async (req: Request, res: Response) => {
   try {
     const now = new Date();
     const today = new Date(now.toISOString().split('T')[0]);
 
-    const expiredGoals = await prisma.goal.updateMany({
+    const expiredGoals = await prisma.goal.findMany({
       where: {
         status: 'active',
         endDate: { lt: today },
       },
-      data: {
-        status: 'expired',
-      },
     });
 
-    res.json({ message: 'Goals expired', count: expiredGoals.count });
+    let count = 0;
+    for (const goal of expiredGoals) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.goal.update({
+            where: { id: goal.id },
+            data: { status: 'expired' },
+          });
+
+          const wallet = await tx.wallet.findUnique({ where: { userId: goal.userId } });
+          if (wallet) {
+            const refundAmount = Number(goal.stakeAmount) - Number(goal.totalEarned);
+            if (refundAmount > 0) {
+              await tx.wallet.update({
+                where: { userId: goal.userId },
+                data: {
+                  availableBalance: { increment: refundAmount },
+                  escrowBalance: { decrement: refundAmount },
+                  version: { increment: 1 },
+                },
+              });
+              await tx.transaction.create({
+                data: {
+                  userId: goal.userId,
+                  walletId: wallet.id,
+                  type: 'deposit',
+                  direction: 'credit',
+                  amount: refundAmount,
+                  balanceBefore: wallet.availableBalance,
+                  balanceAfter: Number(wallet.availableBalance) + refundAmount,
+                  status: 'completed',
+                  referenceId: goal.id,
+                  referenceType: 'goal',
+                  description: `Refund for expired goal: ${goal.title}`,
+                  processedAt: new Date(),
+                },
+              });
+            }
+          }
+        });
+        count++;
+      } catch (err) {
+        console.error(`[Cron] Failed to expire goal ${goal.id}:`, err);
+      }
+    }
+
+    res.json({ message: 'Goals expired with refunds', count });
   } catch (err) {
     console.error('[Cron] Expire goals error:', err);
     res.status(500).json({ error: 'Failed to expire goals' });

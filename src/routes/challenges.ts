@@ -12,21 +12,32 @@ const router = Router();
 router.get('/', authenticate, async (req: Request, res: Response) => {
   try {
     const status = req.query.status as string | undefined;
-    const challenges = await prisma.challenge.findMany({
-      where: {
-        deletedAt: null,
-        ...(status ? { status: status as any } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-      include: {
-        participants: {
-          include: { user: { include: { profile: true } } },
-          orderBy: { joinedAt: 'asc' },
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const skip = (page - 1) * limit;
+
+    const where = {
+      deletedAt: null,
+      ...(status ? { status: status as any } : {}),
+    };
+
+    const [challenges, total] = await Promise.all([
+      prisma.challenge.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          participants: {
+            include: { user: { include: { profile: true } } },
+            orderBy: { joinedAt: 'asc' },
+          },
         },
-      },
-    });
-    res.json({ challenges });
+      }),
+      prisma.challenge.count({ where }),
+    ]);
+
+    res.json({ challenges, total, page, limit, hasMore: skip + challenges.length < total });
   } catch (err) {
     console.error('Challenges list error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -37,12 +48,24 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
 router.get('/mine', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const participants = await prisma.challengeParticipant.findMany({
-      where: { userId },
-      include: { challenge: true },
-      orderBy: { joinedAt: 'desc' },
-    });
-    res.json({ challenges: participants.map(p => ({ ...p.challenge, participant: p })) });
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const skip = (page - 1) * limit;
+
+    const where = { userId };
+
+    const [participants, total] = await Promise.all([
+      prisma.challengeParticipant.findMany({
+        where,
+        include: { challenge: true },
+        orderBy: { joinedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.challengeParticipant.count({ where }),
+    ]);
+
+    res.json({ challenges: participants.map(p => ({ ...p.challenge, participant: p })), total, page, limit, hasMore: skip + participants.length < total });
   } catch (err) {
     console.error('My challenges error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -199,6 +222,9 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
         data: { challengeId, userId, stakePaid: challenge.entryStake, status: 'active' },
       });
 
+      const freshWallet = await tx.wallet.findUnique({ where: { userId } });
+      const currentBalance = freshWallet ? Number(freshWallet.availableBalance) : 0;
+
       await tx.wallet.update({
         where: { userId },
         data: {
@@ -216,8 +242,8 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
           type: 'stake',
           direction: 'debit',
           amount: challenge.entryStake,
-          balanceBefore: Number(wallet.availableBalance),
-          balanceAfter: Number(wallet.availableBalance) - Number(challenge.entryStake),
+          balanceBefore: currentBalance,
+          balanceAfter: currentBalance - Number(challenge.entryStake),
           status: 'completed',
           referenceId: challengeId,
           referenceType: 'challenge',
@@ -233,6 +259,123 @@ router.post('/join', authenticate, validate(joinChallengeSchema), async (req: Re
       return res.status(400).json({ error: 'Challenge is full' });
     }
     console.error('Join challenge error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/challenges/join-by-code
+router.post('/join-by-code', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { inviteCode } = req.body as { inviteCode: string };
+
+    if (!inviteCode || typeof inviteCode !== 'string') {
+      return res.status(400).json({ error: 'Invite code is required' });
+    }
+
+    const challenge = await prisma.challenge.findFirst({
+      where: { inviteCode: inviteCode.toUpperCase(), deletedAt: null },
+    });
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found for this invite code' });
+    if (challenge.status !== 'open') {
+      return res.status(400).json({ error: 'Challenge is not accepting new participants' });
+    }
+
+    const existing = await prisma.challengeParticipant.findUnique({
+      where: { challengeId_userId: { challengeId: challenge.id, userId } },
+    });
+    if (existing) return res.status(409).json({ error: 'Already joined this challenge' });
+
+    const wallet = await prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet || wallet.availableBalance < challenge.entryStake) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.challenge.updateMany({
+        where: { id: challenge.id, currentParticipants: { lt: challenge.maxParticipants } },
+        data: {
+          currentParticipants: { increment: 1 },
+          prizePool: { increment: challenge.entryStake },
+        },
+      });
+      if (updated.count === 0) {
+        throw new Error('CHALLENGE_FULL');
+      }
+
+      const freshChallenge = await tx.challenge.findUnique({ where: { id: challenge.id } });
+      if (freshChallenge && freshChallenge.currentParticipants >= freshChallenge.maxParticipants) {
+        await tx.challenge.update({ where: { id: challenge.id }, data: { status: 'full' } });
+      }
+
+      await tx.challengeParticipant.create({
+        data: { challengeId: challenge.id, userId, stakePaid: challenge.entryStake, status: 'active' },
+      });
+
+      const freshWallet = await tx.wallet.findUnique({ where: { userId } });
+      const currentBalance = freshWallet ? Number(freshWallet.availableBalance) : 0;
+
+      await tx.wallet.update({
+        where: { userId },
+        data: {
+          availableBalance: { decrement: challenge.entryStake },
+          escrowBalance: { increment: challenge.entryStake },
+          totalStakedAllTime: { increment: challenge.entryStake },
+          version: { increment: 1 },
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          walletId: wallet.id,
+          type: 'stake',
+          direction: 'debit',
+          amount: challenge.entryStake,
+          balanceBefore: currentBalance,
+          balanceAfter: currentBalance - Number(challenge.entryStake),
+          status: 'completed',
+          referenceId: challenge.id,
+          referenceType: 'challenge',
+          description: `Staked for challenge: ${challenge.title}`,
+          processedAt: new Date(),
+        },
+      });
+    });
+
+    res.status(200).json({ message: 'Joined challenge', challengeId: challenge.id });
+  } catch (err: any) {
+    if (err?.message === 'CHALLENGE_FULL') {
+      return res.status(400).json({ error: 'Challenge is full' });
+    }
+    console.error('Join by code error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/challenges/:id/open — creator opens a draft challenge
+router.post('/:id/open', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const challengeId = req.params.id as string;
+
+    const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
+    if (challenge.creatorId !== userId) {
+      return res.status(403).json({ error: 'Only the creator can open this challenge' });
+    }
+    if (challenge.status !== 'draft') {
+      return res.status(400).json({ error: 'Challenge is not in draft status' });
+    }
+
+    const updated = await prisma.challenge.update({
+      where: { id: challengeId },
+      data: { status: 'open', registrationStart: new Date() },
+    });
+
+    res.json({ message: 'Challenge is now open', challenge: updated });
+  } catch (err) {
+    console.error('Open challenge error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -270,17 +413,11 @@ router.post('/:id/complete', authenticate, challengeCompleteRateLimit, validate(
       return res.status(400).json({ error: 'Activity session must be from today' });
     }
 
-    const sessionAlreadyUsed = await prisma.challengeParticipant.findFirst({
-      where: { challengeId, status: 'active' },
-      include: { challenge: true },
+    const sessionAlreadyUsed = await prisma.dailyTaskLog.findFirst({
+      where: { userId, activitySessionId, status: 'completed' },
     });
     if (sessionAlreadyUsed) {
-      const usedSession = await prisma.dailyTaskLog.findFirst({
-        where: { userId, activitySessionId, status: 'completed' },
-      });
-      if (usedSession) {
-        return res.status(400).json({ error: 'This session has already been used' });
-      }
+      return res.status(400).json({ error: 'This session has already been used' });
     }
 
     const chStartDate = new Date(challenge.challengeStart).getTime();
@@ -336,6 +473,17 @@ router.post('/:id/complete', authenticate, challengeCompleteRateLimit, validate(
       },
     });
 
+    const allParticipants = await prisma.challengeParticipant.findMany({
+      where: { challengeId },
+      orderBy: { completionPct: 'desc' },
+    });
+    for (let i = 0; i < allParticipants.length; i++) {
+      await prisma.challengeParticipant.update({
+        where: { id: allParticipants[i].id },
+        data: { currentRank: i + 1 },
+      });
+    }
+
     res.json({ participant: updated });
   } catch (err) {
     console.error('Challenge complete error:', err);
@@ -366,7 +514,7 @@ router.post('/auto-complete', authenticate, requireCronSecret, async (req: Reque
         const ranked = participants.map((p, i) => ({
           id: p.id,
           finalRank: i + 1,
-          status: p.completionPct.gte(100) ? ('completed' as const) : ('active' as const),
+          status: Number(p.completionPct) >= 100 ? ('completed' as const) : ('active' as const),
         }));
 
         for (const r of ranked) {
@@ -378,46 +526,76 @@ router.post('/auto-complete', authenticate, requireCronSecret, async (req: Reque
 
         const netPool = Number(ch.prizePool) * (1 - Number(ch.platformFeePct));
 
-        if (ch.prizeModel === 'proportional' && participants.length > 0) {
-          const totalPct = participants.reduce((sum, p) => sum + Number(p.completionPct), 0);
-          for (const p of participants) {
-            const share = totalPct > 0 ? (Number(p.completionPct) / totalPct) * netPool : netPool / participants.length;
-            const rounded = Math.round(share * 100) / 100;
-            if (rounded > 0) {
-              await tx.challengeParticipant.update({
-                where: { id: p.id },
-                data: { actualEarnings: rounded },
-              });
+        const earnings: { participantId: string; userId: string; amount: number }[] = [];
 
-              const wallet = await tx.wallet.findUnique({ where: { userId: p.userId } });
-              if (wallet) {
-                await tx.wallet.update({
-                  where: { userId: p.userId },
-                  data: {
-                    escrowBalance: { decrement: Number(p.stakePaid) },
-                    availableBalance: { increment: rounded },
-                    totalEarnedAllTime: { increment: rounded },
-                    version: { increment: 1 },
-                  },
-                });
-                await tx.transaction.create({
-                  data: {
-                    userId: p.userId,
-                    walletId: wallet.id,
-                    type: 'challenge_prize',
-                    direction: 'credit',
-                    amount: rounded,
-                    balanceBefore: Number(wallet.availableBalance),
-                    balanceAfter: Number(wallet.availableBalance) + rounded,
-                    status: 'completed',
-                    referenceId: ch.id,
-                    referenceType: 'challenge',
-                    description: `Prize for challenge: ${ch.title}`,
-                    processedAt: new Date(),
-                  },
-                });
+        if (participants.length > 0) {
+          if (ch.prizeModel === 'proportional') {
+            const totalPct = participants.reduce((sum, p) => sum + Number(p.completionPct), 0);
+            for (const p of participants) {
+              const share = totalPct > 0 ? (Number(p.completionPct) / totalPct) * netPool : netPool / participants.length;
+              const rounded = Math.round(share * 100) / 100;
+              if (rounded > 0) {
+                earnings.push({ participantId: p.id, userId: p.userId, amount: rounded });
               }
             }
+          } else if (ch.prizeModel === 'winner_takes_most') {
+            const sorted = [...participants].sort((a, b) => Number(b.completionPct) - Number(a.completionPct));
+            const splits = [0.6, 0.25, 0.15];
+            for (let i = 0; i < sorted.length; i++) {
+              const pct = i < splits.length ? splits[i] : 0;
+              const amount = Math.round(netPool * pct * 100) / 100;
+              if (amount > 0) {
+                earnings.push({ participantId: sorted[i].id, userId: sorted[i].userId, amount });
+              }
+            }
+          } else if (ch.prizeModel === 'all_or_nothing') {
+            const winners = participants.filter(p => Number(p.completionPct) >= 100);
+            if (winners.length > 0) {
+              const share = Math.round((netPool / winners.length) * 100) / 100;
+              for (const p of winners) {
+                earnings.push({ participantId: p.id, userId: p.userId, amount: share });
+              }
+            } else {
+              for (const p of participants) {
+                earnings.push({ participantId: p.id, userId: p.userId, amount: Number(p.stakePaid) });
+              }
+            }
+          }
+        }
+
+        for (const e of earnings) {
+          await tx.challengeParticipant.update({
+            where: { id: e.participantId },
+            data: { actualEarnings: e.amount },
+          });
+
+          const wallet = await tx.wallet.findUnique({ where: { userId: e.userId } });
+          if (wallet) {
+            await tx.wallet.update({
+              where: { userId: e.userId },
+              data: {
+                escrowBalance: { decrement: Number(participants.find(p => p.id === e.participantId)?.stakePaid ?? 0) },
+                availableBalance: { increment: e.amount },
+                totalEarnedAllTime: { increment: e.amount },
+                version: { increment: 1 },
+              },
+            });
+            await tx.transaction.create({
+              data: {
+                userId: e.userId,
+                walletId: wallet.id,
+                type: 'challenge_prize',
+                direction: 'credit',
+                amount: e.amount,
+                balanceBefore: Number(wallet.availableBalance),
+                balanceAfter: Number(wallet.availableBalance) + e.amount,
+                status: 'completed',
+                referenceId: ch.id,
+                referenceType: 'challenge',
+                description: `Prize for challenge: ${ch.title}`,
+                processedAt: new Date(),
+              },
+            });
           }
         }
 

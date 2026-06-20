@@ -11,6 +11,53 @@ const router = Router();
 // GET /api/goals
 router.get('/', authenticate, async (req: Request, res: Response) => {
   try {
+    const now = new Date();
+    const today = new Date(now.toISOString().split('T')[0]);
+
+    const expiredGoals = await prisma.goal.findMany({
+      where: { userId: req.user!.userId, status: 'active', endDate: { lt: today } },
+    });
+
+    for (const goal of expiredGoals) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.goal.update({ where: { id: goal.id }, data: { status: 'expired' } });
+          const wallet = await tx.wallet.findUnique({ where: { userId: goal.userId } });
+          if (wallet) {
+            const refundAmount = Number(goal.stakeAmount) - Number(goal.totalEarned);
+            if (refundAmount > 0) {
+              await tx.wallet.update({
+                where: { userId: goal.userId },
+                data: {
+                  availableBalance: { increment: refundAmount },
+                  escrowBalance: { decrement: refundAmount },
+                  version: { increment: 1 },
+                },
+              });
+              await tx.transaction.create({
+                data: {
+                  userId: goal.userId,
+                  walletId: wallet.id,
+                  type: 'deposit',
+                  direction: 'credit',
+                  amount: refundAmount,
+                  balanceBefore: wallet.availableBalance,
+                  balanceAfter: Number(wallet.availableBalance) + refundAmount,
+                  status: 'completed',
+                  referenceId: goal.id,
+                  referenceType: 'goal',
+                  description: `Refund for expired goal: ${goal.title}`,
+                  processedAt: new Date(),
+                },
+              });
+            }
+          }
+        });
+      } catch (err) {
+        console.error(`Failed to auto-expire goal ${goal.id}:`, err);
+      }
+    }
+
     const goals = await prisma.goal.findMany({
       where: { userId: req.user!.userId, deletedAt: null, status: { not: 'expired' } },
       orderBy: { createdAt: 'desc' },
@@ -389,6 +436,14 @@ router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeT
         where: { goalId, status: 'completed' },
       });
 
+      const shieldedCount = await tx.dailyTaskLog.count({
+        where: { goalId, status: 'shielded' },
+      });
+
+      const restDayCount = await tx.dailyTaskLog.count({
+        where: { goalId, status: 'rest_day' },
+      });
+
       const log = await tx.dailyTaskLog.create({
         data: {
           goalId,
@@ -407,12 +462,12 @@ router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeT
         where: { id: goalId },
         data: {
           totalEarned: { increment: dailyEarnback },
-          status: logCount + 1 >= goal.durationDays ? 'completed' : 'active',
+          status: logCount + shieldedCount + restDayCount + 1 >= goal.durationDays ? 'completed' : 'active',
         },
       });
 
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-       if (!wallet) {
+      const freshWallet = await tx.wallet.findUnique({ where: { userId } });
+       if (!freshWallet) {
          throw new Error('Wallet not found for user');
        }
 
@@ -429,12 +484,12 @@ router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeT
       await tx.transaction.create({
         data: {
           userId,
-          walletId: wallet!.id,
+          walletId: freshWallet.id,
           type: 'earnback',
           direction: 'credit',
           amount: dailyEarnback,
-          balanceBefore: wallet!.availableBalance,
-          balanceAfter: Number(wallet!.availableBalance) + dailyEarnback,
+          balanceBefore: freshWallet.availableBalance,
+          balanceAfter: Number(freshWallet.availableBalance) + dailyEarnback,
           status: 'completed',
           referenceId: goalId,
           referenceType: 'goal',
@@ -445,7 +500,22 @@ router.post('/complete', authenticate, goalCompleteRateLimit, validate(completeT
 
       const streak = await tx.streak.findUnique({ where: { userId_goalId: { userId, goalId } } });
       if (streak) {
-        const newCurrentStreak = streak.currentStreak + 1;
+        const todayDate = new Date(today);
+        const lastActive = streak.lastActivityDate ? new Date(streak.lastActivityDate.toISOString().split('T')[0]) : null;
+        const yesterday = new Date(todayDate);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        const lastActiveStr = lastActive ? lastActive.toISOString().split('T')[0] : null;
+
+        let newCurrentStreak: number;
+        if (lastActiveStr === today) {
+          newCurrentStreak = streak.currentStreak;
+        } else if (lastActiveStr === yesterdayStr) {
+          newCurrentStreak = streak.currentStreak + 1;
+        } else {
+          newCurrentStreak = 1;
+        }
+
         await tx.streak.update({ 
           where: { id: streak.id }, 
           data: { 
@@ -492,10 +562,40 @@ router.post('/shield', authenticate, validate(shieldDaySchema), async (req: Requ
       await tx.dailyTaskLog.create({
         data: { goalId, userId, taskDate: new Date(date), status: 'shielded', earnedAmount: goal.dailyEarnback },
       });
-      await tx.streak.update({
-        where: { id: streak.id },
-        data: { shieldRestoresUsed: { increment: 1 } },
-      });
+
+      const streak = await tx.streak.findUnique({ where: { userId_goalId: { userId, goalId } } });
+      if (streak) {
+        const todayDate = new Date(new Date().toISOString().split('T')[0]);
+        const lastActive = streak.lastActivityDate ? new Date(streak.lastActivityDate.toISOString().split('T')[0]) : null;
+        const yesterday = new Date(todayDate);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        const lastActiveStr = lastActive ? lastActive.toISOString().split('T')[0] : null;
+
+        let newCurrentStreak: number;
+        if (lastActiveStr === todayDate.toISOString().split('T')[0]) {
+          newCurrentStreak = streak.currentStreak;
+        } else if (lastActiveStr === yesterdayStr) {
+          newCurrentStreak = streak.currentStreak + 1;
+        } else {
+          newCurrentStreak = 1;
+        }
+
+        await tx.streak.update({
+          where: { id: streak.id },
+          data: {
+            shieldRestoresUsed: { increment: 1 },
+            currentStreak: newCurrentStreak,
+            lastActivityDate: new Date(date),
+            bestStreak: Math.max(streak.bestStreak, newCurrentStreak),
+          },
+        });
+      } else {
+        await tx.streak.update({
+          where: { id: streak!.id },
+          data: { shieldRestoresUsed: { increment: 1 } },
+        });
+      }
 
       const dailyEarnback = Number(goal.dailyEarnback);
 
@@ -566,7 +666,8 @@ router.post('/forfeit', authenticate, validate(forfeitGoalSchema), async (req: R
       where: { goalId, taskDate: new Date(today) },
     });
     if (existing) {
-      return res.status(400).json({ error: 'A log already exists for today' });
+      const reason = existing.status === 'completed' ? 'Already completed today' : existing.status === 'shielded' ? 'Shielded today' : existing.status === 'rest_day' ? 'Rest day today' : 'Already logged for today';
+      return res.status(400).json({ error: reason });
     }
 
     const dailyEarnback = Number(goal.dailyEarnback);
@@ -697,13 +798,32 @@ router.post('/mark-missed-days', requireCronSecret, async (req: Request, res: Re
           existingLogs.map((l) => l.taskDate.toISOString().split('T')[0])
         );
 
+        // Build rest day set
+        const restDaySet = new Set<number>();
+        if (goal.restDaysEnabled && goal.restDayOfWeek && goal.restDayOfWeek.length > 0) {
+          for (const d of goal.restDayOfWeek) restDaySet.add(d);
+        }
+
         // Find all days from start to effectiveEnd that have no log
         const missedDays: Date[] = [];
         const checkDate = new Date(goalStartDate);
         while (checkDate <= effectiveEnd) {
           const dateStr = checkDate.toISOString().split('T')[0];
           if (!loggedDates.has(dateStr)) {
-            missedDays.push(new Date(dateStr));
+            const dayOfWeek = checkDate.getDay() + 1;
+            if (restDaySet.size > 0 && restDaySet.has(dayOfWeek)) {
+              // Create rest_day log instead of missed
+              await prisma.dailyTaskLog.create({
+                data: {
+                  goalId: goal.id,
+                  userId: goal.userId,
+                  taskDate: new Date(dateStr),
+                  status: 'rest_day',
+                },
+              });
+            } else {
+              missedDays.push(new Date(dateStr));
+            }
           }
           checkDate.setDate(checkDate.getDate() + 1);
         }
@@ -766,10 +886,31 @@ router.post('/mark-missed-days', requireCronSecret, async (req: Request, res: Re
             });
           }
 
-          // Reset streak since there are missed days
+          // Recalculate streak from most recent contiguous completed sequence
+          const allLogs = await tx.dailyTaskLog.findMany({
+            where: { goalId: goal.id },
+            orderBy: { taskDate: 'desc' },
+            select: { taskDate: true, status: true },
+          });
+
+          let recalculatedStreak = 0;
+          const todayStr2 = today.toISOString().split('T')[0];
+          let checkDateStr = todayStr2;
+          for (const log of allLogs) {
+            const logDateStr = log.taskDate.toISOString().split('T')[0];
+            if (logDateStr === checkDateStr && (log.status === 'completed' || log.status === 'shielded')) {
+              recalculatedStreak++;
+              const prev = new Date(checkDateStr);
+              prev.setDate(prev.getDate() - 1);
+              checkDateStr = prev.toISOString().split('T')[0];
+            } else if (logDateStr < checkDateStr) {
+              break;
+            }
+          }
+
           await tx.streak.update({
             where: { userId_goalId: { userId: goal.userId, goalId: goal.id } },
-            data: { currentStreak: 0 },
+            data: { currentStreak: recalculatedStreak },
           });
         });
 
@@ -787,7 +928,7 @@ router.post('/mark-missed-days', requireCronSecret, async (req: Request, res: Re
 });
 
 // POST /api/goals/expire-expired (cron endpoint)
-router.post('/expire-expired', async (req: Request, res: Response) => {
+router.post('/expire-expired', requireCronSecret, async (req: Request, res: Response) => {
   try {
     const now = new Date();
     const expiredGoals = await prisma.goal.findMany({
