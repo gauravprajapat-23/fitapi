@@ -11,7 +11,11 @@
     "db:push": "prisma db push --schema=prisma/schema.prisma",
     "db:seed": "tsx src/seed.ts",
     "db:studio": "prisma studio --schema=prisma/schema.prisma",
-    "cron:mark-missed-days": "node -e \"fetch(process.env.BACKEND_URL + '/api/goals/mark-missed-days', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\""
+    "cron:mark-missed-days": "node -e \"fetch(process.env.BACKEND_URL + '/api/goals/mark-missed-days', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\"",
+    "cron:goal-reminders": "node -e \"fetch(process.env.BACKEND_URL + '/api/notifications/cron/goal-reminders', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\"",
+    "cron:streak-alerts": "node -e \"fetch(process.env.BACKEND_URL + '/api/notifications/cron/streak-alerts', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\"",
+    "cron:challenge-updates": "node -e \"fetch(process.env.BACKEND_URL + '/api/notifications/cron/challenge-updates', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\"",
+    "cron:expire-goals": "node -e \"fetch(process.env.BACKEND_URL + '/api/notifications/cron/expire-goals', { method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET || 'fitstake-cron-secret-change-me' } }).then(r => r.json()).then(console.log).catch(console.error)\""
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
