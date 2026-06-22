@@ -45,7 +45,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       status: subscription.status,
     });
   } catch (err) {
-    if (__DEV__) console.error('Subscription get error:', err);
+    console.error('Subscription get error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -105,7 +105,7 @@ router.post('/create', authenticate, validate(createSubscriptionSchema), async (
       },
     });
   } catch (err) {
-    if (__DEV__) console.error('Subscription create error:', err);
+    console.error('Subscription create error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -145,7 +145,7 @@ router.post('/cancel', authenticate, validate(cancelSubscriptionSchema), async (
       },
     });
   } catch (err) {
-    if (__DEV__) console.error('Subscription cancel error:', err);
+    console.error('Subscription cancel error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -180,7 +180,7 @@ router.post('/resume', authenticate, async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
-    if (__DEV__) console.error('Subscription resume error:', err);
+    console.error('Subscription resume error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -203,7 +203,7 @@ router.post('/webhook', requireCronSecret, async (req: Request, res: Response) =
 
     const user = await prisma.user.findFirst({ where: { email: appUserId } });
     if (!user) {
-      if (__DEV__) console.warn('[RevenueCat] User not found for:', appUserId);
+      console.warn('[RevenueCat] User not found for:', appUserId);
       return res.json({ received: true });
     }
 
@@ -297,7 +297,7 @@ router.post('/webhook', requireCronSecret, async (req: Request, res: Response) =
 
     res.json({ received: true });
   } catch (err) {
-    if (__DEV__) console.error('RevenueCat webhook error:', err);
+    console.error('RevenueCat webhook error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

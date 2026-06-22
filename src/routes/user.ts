@@ -5,7 +5,7 @@ import { authenticate } from '../middleware/auth';
 const router = Router();
 
 // GET /api/user/:id/profile
-router.get('/:id/profile', async (req: Request, res: Response) => {
+router.get('/:id/profile', authenticate, async (req: Request, res: Response) => {
   try {
     const profile = await prisma.userProfile.findUnique({
       where: { userId: req.params.id as string },
@@ -36,6 +36,22 @@ router.get('/:id/profile', async (req: Request, res: Response) => {
       where: { userId: profile.userId, finalRank: 1 },
     });
 
+    // Determine friendship status between current user and viewed user
+    let friendshipStatus: string | null = null;
+    const currentUserId = req.user!.userId;
+    if (currentUserId && currentUserId !== profile.userId) {
+      const friendship = await prisma.friendship.findFirst({
+        where: {
+          OR: [
+            { requesterId: currentUserId, addresseeId: profile.userId },
+            { requesterId: profile.userId, addresseeId: currentUserId },
+          ],
+        },
+        select: { status: true },
+      });
+      friendshipStatus = friendship?.status ?? null;
+    }
+
     res.json({
       profile: {
         id: profile.userId,
@@ -56,6 +72,7 @@ router.get('/:id/profile', async (req: Request, res: Response) => {
         goalsCompleted,
         challengesWon,
       },
+      friendshipStatus,
     });
   } catch (err) {
     console.error('User profile error:', err);

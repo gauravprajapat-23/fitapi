@@ -28,7 +28,7 @@ router.get('/friends', authenticate, async (req: Request, res: Response) => {
     });
     res.json({ friends: mapped });
   } catch (err) {
-    if (__DEV__) console.error('Friends list error:', err);
+    console.error('Friends list error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -42,7 +42,7 @@ router.get('/friend-requests', authenticate, async (req: Request, res: Response)
     });
     res.json({ requests });
   } catch (err) {
-    if (__DEV__) console.error('Friend requests error:', err);
+    console.error('Friend requests error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -70,7 +70,7 @@ router.post('/friend-request', authenticate, validate(sendFriendRequestSchema), 
     });
     res.status(201).json({ friendship: friend });
   } catch (err) {
-    if (__DEV__) console.error('Friend request error:', err);
+    console.error('Friend request error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -90,7 +90,7 @@ router.post('/friend-respond', authenticate, validate(respondFriendRequestSchema
     });
     res.json({ friendship: updated });
   } catch (err) {
-    if (__DEV__) console.error('Friend respond error:', err);
+    console.error('Friend respond error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -114,7 +114,7 @@ router.post('/friend-remove', authenticate, async (req: Request, res: Response) 
     await prisma.friendship.delete({ where: { id: friendshipId } });
     res.json({ success: true });
   } catch (err) {
-    if (__DEV__) console.error('Friend remove error:', err);
+    console.error('Friend remove error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -184,7 +184,7 @@ router.get('/search', authenticate, async (req: Request, res: Response) => {
 
     res.json({ users: mapped });
   } catch (err) {
-    if (__DEV__) console.error('User search error:', err);
+    console.error('User search error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -209,7 +209,7 @@ router.get('/referral-code', authenticate, async (req: Request, res: Response) =
     }
     res.json({ referral });
   } catch (err) {
-    if (__DEV__) console.error('Referral code error:', err);
+    console.error('Referral code error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -245,7 +245,7 @@ router.get('/referral-stats', authenticate, async (req: Request, res: Response) 
 
     res.json({ stats: { totalReferrals: referredCount, signedUp: signedUpCount, bonusEarned, referralCode: referral.referralCode, referralLink: referral.referralLink, referredUsers: mappedReferred } });
   } catch (err) {
-    if (__DEV__) console.error('Referral stats error:', err);
+    console.error('Referral stats error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -280,7 +280,7 @@ router.get('/chat/:challengeId', authenticate, async (req: Request, res: Respons
     const hasMore = messages.length === limit;
     res.json({ messages, hasMore, nextCursor: hasMore ? messages[messages.length - 1]?.id : null });
   } catch (err) {
-    if (__DEV__) console.error('Chat messages error:', err);
+    console.error('Chat messages error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -300,7 +300,7 @@ router.post('/chat', authenticate, validate(sendMessageSchema), async (req: Requ
     });
     res.status(201).json({ message });
   } catch (err) {
-    if (__DEV__) console.error('Send message error:', err);
+    console.error('Send message error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -332,7 +332,7 @@ router.post('/chat/:messageId/reactions', authenticate, validate(addReactionSche
     });
     res.status(201).json({ reaction });
   } catch (err) {
-    if (__DEV__) console.error('Reaction add error:', err);
+    console.error('Reaction add error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -353,7 +353,7 @@ router.delete('/chat/:messageId/reactions', authenticate, validate(removeReactio
     });
     res.json({ success: true });
   } catch (err) {
-    if (__DEV__) console.error('Reaction remove error:', err);
+    console.error('Reaction remove error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -383,17 +383,17 @@ router.get('/activity-feed', authenticate, async (req: Request, res: Response) =
 
     const [activities, total] = await Promise.all([
       prisma.activitySession.findMany({
-        where: { userId: { in: ids }, status: 'completed' },
+        where: { userId: { in: ids }, verificationStatus: 'passed' },
         include: {
           user: { include: { profile: { select: { displayName: true, avatarUrl: true } } } },
           goal: { select: { title: true, activityType: true } },
         },
-        orderBy: { completedAt: 'desc' },
+        orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
       prisma.activitySession.count({
-        where: { userId: { in: ids }, status: 'completed' },
+        where: { userId: { in: ids }, verificationStatus: 'passed' },
       }),
     ]);
 
@@ -408,12 +408,12 @@ router.get('/activity-feed', authenticate, async (req: Request, res: Response) =
         calories: a.caloriesBurned,
         goalTitle: a.goal?.title,
       },
-      timestamp: a.completedAt ?? a.createdAt,
+      timestamp: a.createdAt,
     }));
 
     res.json({ activities: mapped, total, page, hasMore: skip + limit < total });
   } catch (err) {
-    if (__DEV__) console.error('Activity feed error:', err);
+    console.error('Activity feed error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -442,13 +442,13 @@ router.get('/friend-streaks', authenticate, async (req: Request, res: Response) 
       name: s.user.profile?.displayName ?? 'User',
       avatar: s.user.profile?.avatarUrl,
       currentStreak: s.currentStreak,
-      longestStreak: s.longestStreak,
+      bestStreak: s.bestStreak,
       lastActivityDate: s.lastActivityDate,
     }));
 
     res.json({ friendStreaks: mapped });
   } catch (err) {
-    if (__DEV__) console.error('Friend streaks error:', err);
+    console.error('Friend streaks error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

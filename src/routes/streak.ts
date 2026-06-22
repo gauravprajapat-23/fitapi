@@ -56,7 +56,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       })),
     });
   } catch (err) {
-    if (__DEV__) console.error('Streak get error:', err);
+    console.error('Streak get error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -132,17 +132,19 @@ router.post('/restore', authenticate, validate(useShieldRestoreSchema), async (r
         where: { userId },
         data: {
           availableBalance: { increment: goal.dailyEarnback },
-          totalEarned: { increment: goal.dailyEarnback },
+          totalEarnedAllTime: { increment: goal.dailyEarnback },
         },
       });
 
-      await tx.walletTransaction.create({
+      await tx.transaction.create({
         data: {
           userId,
-          type: 'earn',
+          walletId: wallet.id,
+          type: 'earnback',
+          direction: 'credit',
           amount: goal.dailyEarnback,
           balanceBefore: wallet.availableBalance,
-          balanceAfter: Number(wallet.availableBalance) + goal.dailyEarnback,
+          balanceAfter: Number(wallet.availableBalance) + Number(goal.dailyEarnback),
           status: 'completed',
           referenceId: streak.goalId!,
           referenceType: 'shield',
@@ -160,7 +162,7 @@ router.post('/restore', authenticate, validate(useShieldRestoreSchema), async (r
       earnback: goal.dailyEarnback,
     });
   } catch (err) {
-    if (__DEV__) console.error('Streak restore error:', err);
+    console.error('Streak restore error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
