@@ -47,6 +47,37 @@ router.get('/friend-requests', authenticate, async (req: Request, res: Response)
   }
 });
 
+// GET /api/social/friend-requests/sent
+router.get('/friend-requests/sent', authenticate, async (req: Request, res: Response) => {
+  try {
+    const requests = await prisma.friendship.findMany({
+      where: { requesterId: req.user!.userId, status: 'pending' },
+      include: { addressee: { include: { profile: true } } },
+    });
+    res.json({ requests });
+  } catch (err) {
+    console.error('Sent friend requests error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/social/friend-requests/cancel
+router.post('/friend-requests/cancel', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { friendshipId } = req.body;
+    const friendship = await prisma.friendship.findFirst({
+      where: { id: friendshipId, requesterId: req.user!.userId, status: 'pending' },
+    });
+    if (!friendship) return res.status(404).json({ error: 'Request not found' });
+
+    await prisma.friendship.delete({ where: { id: friendshipId } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Cancel friend request error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/social/friend-request
 router.post('/friend-request', authenticate, validate(sendFriendRequestSchema), async (req: Request, res: Response) => {
   try {
